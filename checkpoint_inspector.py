@@ -35,17 +35,21 @@ def read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
 
 
 def _detect_architecture(keys: list[str], has_llm_adapter: bool) -> str:
-    if any(k.startswith("double_blocks.") for k in keys):
+    if any(k.startswith(("double_blocks.", "model.diffusion_model.double_blocks.")) for k in keys):
         return "Flux (MMDiT)"
-    if any(k.startswith("model.diffusion_model.double_blocks.") for k in keys):
+    if any(k.startswith(("model.diffusion_model.joint_blocks.", "joint_blocks.")) for k in keys):
         return "SD3 / SD3.5 (MMDiT)"
-    if has_llm_adapter or any(k.startswith("model.diffusion_model.blocks.") for k in keys):
-        return "Anima / Wan2.1 (DiT)"
+    if has_llm_adapter or any(k.startswith("net.") for k in keys) or any("qwen" in k for k in keys):
+        return "Anima (DiT)"
+    if any(k.startswith(("v_blocks.", "model.diffusion_model.v_blocks.", "head.weight")) for k in keys):
+        return "Wan2.1 (DiT)"
+    if any(k.startswith("model.diffusion_model.blocks.") for k in keys):
+        return "DiT / Diffusion Model"
     if any(k.startswith("conditioner.embedders.") for k in keys):
         return "SDXL (UNet)"
     if any(k.startswith("cond_stage_model.") for k in keys):
         return "SD 1.5 / SD 2.1 (UNet)"
-    if any(k.startswith(("model.diffusion_model.input_blocks.", "diffusion_model.input_blocks.")) for k in keys):
+    if any(k.startswith(("model.diffusion_model.input_blocks.", "diffusion_model.input_blocks.", "input_blocks.")) for k in keys):
         # Heuristic for SDXL vs SD 1.5 if text encoder is missing
         # SDXL has 3 stages (320, 640, 1280) while SD 1.5 has 4 stages (320, 640, 1280, 1280)
         has_stage_3 = any("input_blocks.9." in k or "input_blocks.10." in k or "input_blocks.11." in k for k in keys)
@@ -109,9 +113,48 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
     metadata = header.get("__metadata__", {})
     keys = [k for k in header.keys() if k != "__metadata__"]
 
-    has_unet = any(k.startswith(("model.diffusion_model.", "diffusion_model.", "double_blocks.", "single_blocks.")) for k in keys)
-    has_clip = any(k.startswith(("cond_stage_model.", "conditioner.embedders.", "text_encoders.", "text_model.", "clip_l.", "clip_g.", "t5xxl.")) for k in keys)
-    has_vae = any(k.startswith(("first_stage_model.", "vae.")) for k in keys)
+    DIFFUSION_MODEL_PREFIXES = (
+        "model.diffusion_model.",
+        "diffusion_model.",
+        "double_blocks.",
+        "single_blocks.",
+        "joint_blocks.",
+        "transformer_blocks.",
+        "transformer.",
+        "net.",
+        "blocks.",
+        "v_blocks.",
+        "layers.",
+        "input_blocks.",
+        "middle_block.",
+        "output_blocks.",
+        "img_in.",
+    )
+    TEXT_ENCODER_PREFIXES = (
+        "cond_stage_model.",
+        "conditioner.embedders.",
+        "text_encoders.",
+        "text_model.",
+        "clip_l.",
+        "clip_g.",
+        "t5xxl.",
+        "text_encoder.",
+        "text_encoder_2.",
+        "text_encoder_3.",
+        "qwen2.",
+        "qwen3.",
+        "encoder.block.",
+    )
+    VAE_PREFIXES = (
+        "first_stage_model.",
+        "vae.",
+        "vae_model.",
+        "autoencoder.",
+    )
+
+    has_unet = any(k.startswith(DIFFUSION_MODEL_PREFIXES) for k in keys)
+    has_clip = any(k.startswith(TEXT_ENCODER_PREFIXES) for k in keys)
+    has_vae = any(k.startswith(VAE_PREFIXES) for k in keys)
     has_llm_adapter = any("llm_adapter" in k for k in keys)
 
     arch = _detect_architecture(keys, has_llm_adapter)
@@ -166,17 +209,36 @@ def format_badges_html(info: dict[str, Any]) -> str:
         return ""
 
     comps = info.get("components", {})
-    unet_badge = '<span style="color: #10b981; font-weight: bold;">UNet: Present</span>' if comps.get("unet") else '<span style="color: #ef4444; font-weight: bold;">UNet: Missing</span>'
-    clip_badge = '<span style="color: #10b981; font-weight: bold;">CLIP: Present</span>' if comps.get("clip") else '<span style="color: #f59e0b; font-weight: bold;">CLIP: Missing</span>'
-    vae_badge = '<span style="color: #10b981; font-weight: bold;">VAE: Present</span>' if comps.get("vae") else '<span style="color: #f59e0b; font-weight: bold;">VAE: Missing (UNet-only)</span>'
-
     arch = info.get("architecture", "Unknown")
+    is_dit = any(w in arch for w in ("DiT", "Flux", "SD3", "Wan", "Anima"))
+    model_type = "DiT" if is_dit else "UNet"
+
+    dit_badge = (
+        f'<span style="color: #10b981; font-weight: bold;">{model_type}: Present</span>'
+        if comps.get("unet")
+        else f'<span style="color: #ef4444; font-weight: bold;">{model_type}: Missing</span>'
+    )
+    clip_badge = (
+        '<span style="color: #10b981; font-weight: bold;">CLIP: Present</span>'
+        if comps.get("clip")
+        else '<span style="color: #f59e0b; font-weight: bold;">CLIP: Missing</span>'
+    )
+    vae_badge = (
+        '<span style="color: #10b981; font-weight: bold;">VAE: Present</span>'
+        if comps.get("vae")
+        else '<span style="color: #f59e0b; font-weight: bold;">VAE: Missing</span>'
+    )
+
+    llm_badge = ""
+    if comps.get("llm_adapter"):
+        llm_badge = ' | <span style="color: #38bdf8; font-weight: bold;">LLM Adapter: Present</span>'
+
     prec = info.get("precision", "Unknown")
     size = info.get("size_str", "")
 
     return (
         f"<div style='margin-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.5;'>"
-        f"[{unet_badge} | {clip_badge} | {vae_badge}] &nbsp;•&nbsp; "
+        f"[{dit_badge} | {clip_badge} | {vae_badge}{llm_badge}] &nbsp;•&nbsp; "
         f"<b>{arch}</b> &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
         f"</div>"
     )
@@ -214,7 +276,9 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"</div>"
         )
 
-    unet_note = "DiT / Denoising network" if comps.get("unet") else "No diffusion model"
+    is_dit = any(w in arch for w in ("DiT", "Flux", "SD3", "Wan", "Anima"))
+    model_name = "Diffusion Transformer (DiT)" if is_dit else "Diffusion Model (UNet)"
+    unet_note = "DiT denoising network" if (comps.get("unet") and is_dit) else ("UNet denoising network" if comps.get("unet") else "No diffusion model detected")
     clip_note = "Embedded text encoder" if comps.get("clip") else "Requires external text encoder"
     vae_note = "Embedded autoencoder" if comps.get("vae") else "Requires external VAE"
 
@@ -319,7 +383,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"</div>"
         # Component Grid
         f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 14px;'>"
-        f"{_comp_pill('Diffusion Model (UNet/DiT)', comps.get('unet'), unet_note)}"
+        f"{_comp_pill(model_name, comps.get('unet'), unet_note)}"
         f"{_comp_pill('Text Encoder (CLIP/T5)', comps.get('clip'), clip_note)}"
         f"{_comp_pill('VAE (Autoencoder)', comps.get('vae'), vae_note)}"
         f"{llm_pill}"
