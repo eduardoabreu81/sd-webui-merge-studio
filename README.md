@@ -13,17 +13,22 @@
 A quantization-aware checkpoint merger for Forge Neo. Merges, converts, and bakes LoRAs
 directly on the *dequantized* weights instead of interpolating raw tensors like the native
 Checkpoint Merger — so it works correctly on quantized builds (fp8, int8, nvfp4, mxfp8,
-convrot) and Anima checkpoints, not just plain fp16/bf16. Also ships a standalone doctor tool
-that repairs a common metadata bug found in community int8 checkpoints.
+convrot) and Anima checkpoints, not just plain fp16/bf16. Also ships an instant model recipe
+and component inspector, plus a standalone doctor tool that repairs a common metadata bug
+found in community int8 checkpoints.
 
 ---
 
 ## Table of Contents
 
 - [Features](#features)
+  - [Checkpoint Merge & Studio](#checkpoint-merge--studio)
+  - [Model Recipe & Inspector](#model-recipe--inspector)
+  - [Quant Format Doctor](#quant-format-doctor)
 - [Which Models Work Here](#which-models-work-here)
 - [Installation](#installation)
 - [Credits](#credits)
+- [License](#license)
 
 ---
 
@@ -45,30 +50,43 @@ that repairs a common metadata bug found in community int8 checkpoints.
     convention, and LoRAs carrying LLM (Qwen3) adapter weights are flagged with a warning —
     Anima's own training guidance says never to train those alongside a LoRA
 - **UNet Only** or **Full Checkpoint** (UNet + CLIP + VAE) save modes
-- Per-component output format: diffusion model, text encoder, and VAE can each target a
+- **Per-component output format**: diffusion model, text encoder, and VAE can each target a
   different precision — **FP16**, **BF16**, **FP8** (e4m3fn / e5m2), **INT8** (tensor-wise or
-  per-channel + Hadamard rotation — "convrot", the scheme most community Anima int8 builds
-  actually use), **NVFP4**, or **INT4** (convrot W4A4). Pick **No Interpolation** with a single
-  model to just convert/quantize a checkpoint with no merge involved
+  per-channel + Hadamard rotation — "convrot"), **NVFP4**, or **INT4** (convrot W4A4). Pick
+  **No Interpolation** with a single model to convert or quantize a checkpoint without merging
+- **Adaptive ConvRot Quantization**: automatically scales group sizes (256, 128, or 64) to
+  fit architectural channel dimensions (e.g. SDXL/Illustrious 640-channel layers) or falls
+  back to tensor-wise int8, avoiding quantization shape mismatches and crashes
+- **Bake Custom VAE or Strip VAE**:
+  - **Original**: Retains the VAE embedded in Model A
+  - **None**: Strips the VAE entirely from the output checkpoint to reduce file size
+  - **Custom VAE**: Select any standalone VAE from `models/VAE` to bake directly into the
+    output checkpoint (even when converting a UNet-only model into a complete checkpoint)
+  - Dedicated precision casting for the saved VAE (FP16, BF16, or FP8 e4m3fn)
+- **Real-Time Component Badges**: dynamic indicators under Model A, B, and C selectors
+  display component presence (`[UNet: Present | CLIP: Present | VAE: Present/Missing]`),
+  detected architecture family, weight precision, and file size immediately upon selection
+  without loading weights into memory
 - **Device control** — Auto, force GPU, or force CPU, with a safety margin check before
   picking GPU so large merges don't silently OOM
-- **Bake Custom VAE or Strip VAE** — choose any standalone VAE from `models/VAE` to bake
-  directly into the output checkpoint (even for UNet-only sources), keep the source VAE, or
-  strip the VAE completely to save disk space
-- **Real-Time Component Badges** — immediately see if a selected checkpoint contains UNet/DiT,
-  Text Encoder, and/or VAE (`[UNet: Present | CLIP: Present | VAE: Missing]`) along with architecture, precision,
-  and size, before launching a merge
 - **Discard layers by regex** and **metadata control** — copy metadata from A/B/C individually,
   attach a full merge recipe (interpolation method, multiplier, discarded layers, baked LoRAs,
   source model hashes) matching the native Checkpoint Merger's provenance convention, or
   preview the source models' existing metadata before merging
 
 ### Model Recipe & Inspector
-- Dedicated inspection tab to inspect any checkpoint's components, architecture, precision,
-  and full merge provenance in < 5ms without loading tensor weights into RAM/VRAM
-- Reads and visualizes the embedded `sd_merge_recipe`: parent models (with SHA-256 hashes),
-  interpolation method, multiplier, baked LoRAs, and nested merge history
-- Full raw metadata explorer with collapsible JSON viewer
+- **Instant Header Inspection**: parses `.safetensors` metadata in < 5ms with zero VRAM or RAM
+  allocation
+- **Component Status**: verifies whether the checkpoint contains a Diffusion Model (UNet/DiT),
+  Text Encoders (CLIP, T5), VAE, or LLM adapters
+- **Architecture & Precision**: identifies the model family (SD1.5, SDXL, Flux, Anima, Wan2.1,
+  SD3, etc.) and primary tensor datatypes
+- **Merge Provenance & Lineage**: reads embedded `sd_merge_recipe` metadata to display parent
+  models, SHA-256 parent hashes, merge methods, interpolation ratios, and nested merge history
+- **Baked LoRA Detection**: lists any LoRAs baked into the checkpoint along with bake strengths
+  and activation tags
+- **Raw Metadata Explorer**: interactive formatted view of all header metadata keys (e.g.
+  ComfyUI workflows, quantization configurations, training configs)
 
 ### Quant Format Doctor
 - Diagnoses and repairs `.safetensors` checkpoints whose `comfy_quant` metadata is missing the
@@ -84,8 +102,8 @@ that repairs a common metadata bug found in community int8 checkpoints.
 ## Which Models Work Here
 
 Anything Forge Neo can load as a normal checkpoint through the standard model loader (SD1,
-SDXL, Flux, Anima, etc.) in plain precision (fp16/bf16) or quantized via the
-MixedPrecisionOps system (fp8/int8/nvfp4/mxfp8/convrot).
+SDXL, Pony, Illustrious, Flux, Anima, Wan2.1, SD3, etc.) in plain precision (fp16/bf16) or
+quantized via the MixedPrecisionOps system (fp8/int8/nvfp4/mxfp8/convrot).
 
 **Does not work** for Nunchaku/SVDQuant checkpoints or GGUF/nf4/fp4 storage — those store
 weights in a completely different way and are rejected with a clear error instead of
@@ -94,17 +112,17 @@ compatible model with an incompatible one is also rejected.
 
 ---
 
-## 📦 Installation
+## Installation
 
 1. Open Forge Neo WebUI
-2. Go to **Extensions** → **Install from URL**
+2. Go to **Extensions** -> **Install from URL**
 3. Paste: `https://github.com/eduardoabreu81/sd-webui-merge-studio`
 4. Click **Install** and reload the WebUI
 5. Open the **Merge Studio** tab
 
 ---
 
-## 📄 Credits
+## Credits
 
 - **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** by Haoming02
 - Native **Checkpoint Merger** (`modules/extras.py`) — merge recipes, metadata/provenance
@@ -112,7 +130,7 @@ compatible model with an incompatible one is also rejected.
 
 ---
 
-## 📜 License
+## License
 
 MIT — see [LICENSE](LICENSE)
 
@@ -120,7 +138,7 @@ MIT — see [LICENSE](LICENSE)
 
 <div align="center">
 
-Made with ❤️ for the Stable Diffusion community
+Made for the Stable Diffusion community
 
 **[Report Bug](https://github.com/eduardoabreu81/sd-webui-merge-studio/issues)** • **[Request Feature](https://github.com/eduardoabreu81/sd-webui-merge-studio/issues)**
 
