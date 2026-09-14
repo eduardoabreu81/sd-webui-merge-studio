@@ -36,7 +36,14 @@ that repairs a common metadata bug found in community int8 checkpoints.
   quantized sources
 - Every source model resolved through the real Forge loader and re-quantized on save through
   its own weight-setting logic, instead of touching raw tensors directly
-- **Bake up to 3 LoRAs** into the merge in the same pass, each with its own strength
+- **Bake up to 3 LoRAs** into the merge in the same pass, each with its own strength, using
+  Forge's own LoRA-application pipeline (not a reimplementation) so results match what you'd
+  get applying the LoRA live
+  - Trigger words from a LoRA's "Activation Text" metadata are written into the output
+    checkpoint's sidecar notes as a reminder, since baked weights still expect the same prompt
+  - **Anima-aware**: activation text is normalized to Anima's lowercase, space-separated
+    convention, and LoRAs carrying LLM (Qwen3) adapter weights are flagged with a warning —
+    Anima's own training guidance says never to train those alongside a LoRA
 - **UNet Only** or **Full Checkpoint** (UNet + CLIP + VAE) save modes
 - Per-component output format: diffusion model, text encoder, and VAE can each target a
   different precision — **FP16**, **BF16**, **FP8** (e4m3fn / e5m2), **INT8** (tensor-wise or
@@ -49,15 +56,6 @@ that repairs a common metadata bug found in community int8 checkpoints.
   attach a full merge recipe (interpolation method, multiplier, discarded layers, baked LoRAs,
   source model hashes) matching the native Checkpoint Merger's provenance convention, or
   preview the source models' existing metadata before merging
-
-### 🧪 LoRA → Checkpoint Baking
-- Bakes LoRAs permanently into a checkpoint's weights using Forge's own LoRA-application
-  pipeline — not a reimplementation — so results match what you'd get applying the LoRA live
-- Trigger words from a LoRA's "Activation Text" metadata are written into the baked
-  checkpoint's sidecar notes as a reminder, since baked weights still expect the same prompt
-- **Anima-aware**: activation text is normalized to Anima's lowercase, space-separated
-  convention, and LoRAs carrying LLM (Qwen3) adapter weights are flagged with a warning —
-  Anima's own training guidance says never to train those alongside a LoRA
 
 ### 🩺 Quant Format Doctor
 - Diagnoses and repairs `.safetensors` checkpoints whose `comfy_quant` metadata is missing the
