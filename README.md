@@ -1,4 +1,4 @@
-# 🧬 Merge Studio
+# Merge Studio
 
 <div align="center">
 
@@ -18,18 +18,18 @@ that repairs a common metadata bug found in community int8 checkpoints.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
-- [Features](#-features)
-- [Which Models Work Here](#-which-models-work-here)
-- [Installation](#-installation)
-- [Credits](#-credits)
+- [Features](#features)
+- [Which Models Work Here](#which-models-work-here)
+- [Installation](#installation)
+- [Credits](#credits)
 
 ---
 
-## 🎯 Features
+## Features
 
-### 🔀 Checkpoint Merge & Studio
+### Checkpoint Merge & Studio
 - **Weighted Sum** (`A * (1 - M) + B * M`), **Add Difference** (`A + (B - C) * M`), and
   **No Interpolation** (single-model format conversion) — same recipes as the native
   Checkpoint Merger, but computed in float space after dequantizing, so it stays correct on
@@ -52,12 +52,25 @@ that repairs a common metadata bug found in community int8 checkpoints.
   model to just convert/quantize a checkpoint with no merge involved
 - **Device control** — Auto, force GPU, or force CPU, with a safety margin check before
   picking GPU so large merges don't silently OOM
+- **Bake Custom VAE or Strip VAE** — choose any standalone VAE from `models/VAE` to bake
+  directly into the output checkpoint (even for UNet-only sources), keep the source VAE, or
+  strip the VAE completely to save disk space
+- **Real-Time Component Badges** — immediately see if a selected checkpoint contains UNet/DiT,
+  Text Encoder, and/or VAE (`[UNet: Present | CLIP: Present | VAE: Missing]`) along with architecture, precision,
+  and size, before launching a merge
 - **Discard layers by regex** and **metadata control** — copy metadata from A/B/C individually,
   attach a full merge recipe (interpolation method, multiplier, discarded layers, baked LoRAs,
   source model hashes) matching the native Checkpoint Merger's provenance convention, or
   preview the source models' existing metadata before merging
 
-### 🩺 Quant Format Doctor
+### Model Recipe & Inspector
+- Dedicated inspection tab to inspect any checkpoint's components, architecture, precision,
+  and full merge provenance in < 5ms without loading tensor weights into RAM/VRAM
+- Reads and visualizes the embedded `sd_merge_recipe`: parent models (with SHA-256 hashes),
+  interpolation method, multiplier, baked LoRAs, and nested merge history
+- Full raw metadata explorer with collapsible JSON viewer
+
+### Quant Format Doctor
 - Diagnoses and repairs `.safetensors` checkpoints whose `comfy_quant` metadata is missing the
   required `format` field — the cause of `ValueError: Unknown quantization format for layer
   ...` on otherwise-valid community quantized builds
@@ -68,7 +81,7 @@ that repairs a common metadata bug found in community int8 checkpoints.
 
 ---
 
-## ⚠️ Which Models Work Here
+## Which Models Work Here
 
 Anything Forge Neo can load as a normal checkpoint through the standard model loader (SD1,
 SDXL, Flux, Anima, etc.) in plain precision (fp16/bf16) or quantized via the

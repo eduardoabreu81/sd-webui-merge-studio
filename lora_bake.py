@@ -18,7 +18,8 @@ from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import extra_networks, shared
 
-from quant_utils import convert_module_tree_precision, debug_print, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from checkpoint_inspector import load_custom_vae_state_dict
+from quant_utils import PLAIN_FORMATS, convert_module_tree_precision, debug_print, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
 
 
 class BakeError(RuntimeError):
@@ -155,6 +156,7 @@ def bake_lora_into_checkpoint(
     vae_output_format: str = "same",
     save_mode: str = "unet_only",
     device_choice: str = "auto",
+    bake_vae: str | None = "original",
     progress_cb=None,
 ) -> dict:
     """loras: list of (lora_path, strength), applied in sequence.
@@ -250,7 +252,11 @@ def bake_lora_into_checkpoint(
                 progress_cb=(lambda i, total, name: progress_cb(f"Quantizing text encoder ({i}/{total}): {name}")) if progress_cb else None,
             )
 
-        if save_full and vae_output_format != "same":
+        is_custom_vae = bool(bake_vae and bake_vae not in ("original", "none", ""))
+        strip_vae = bake_vae == "none"
+        has_vae_model = getattr(engine.forge_objects, "vae", None) is not None
+
+        if save_full and not is_custom_vae and not strip_vae and vae_output_format != "same" and has_vae_model:
             if progress_cb:
                 progress_cb(f"Converting VAE to {vae_output_format}...")
             _, vae_overrides = convert_module_tree_precision(
@@ -274,10 +280,11 @@ def bake_lora_into_checkpoint(
         if save_full:
             clip_sd = utils.get_state_dict_after_quant(clip.cond_stage_model)
             clip_sd.update(clip_overrides)
-            vae_sd = utils.get_state_dict_after_quant(engine.forge_objects.vae.first_stage_model)
-            vae_sd.update(vae_overrides)
             sd.update(engine.model_config.process_clip_state_dict_for_saving(clip_sd))
-            sd.update(engine.model_config.process_vae_state_dict_for_saving(vae_sd))
+            if not is_custom_vae and not strip_vae and has_vae_model:
+                vae_sd = utils.get_state_dict_after_quant(engine.forge_objects.vae.first_stage_model)
+                vae_sd.update(vae_overrides)
+                sd.update(engine.model_config.process_vae_state_dict_for_saving(vae_sd))
         else:
             # For Anima, llm_adapter was moved into clip.cond_stage_model by loader.py,
             # but on disk it is part of Anima's DiT (model.diffusion_model.llm_adapter.*).
@@ -287,6 +294,25 @@ def bake_lora_into_checkpoint(
                 if "llm_adapter" in k:
                     suffix = k[k.index("llm_adapter") :]
                     sd[f"model.diffusion_model.{suffix}"] = v
+
+        if is_custom_vae:
+            if progress_cb:
+                progress_cb(f"Baking custom VAE: {os.path.basename(bake_vae)}...")
+            custom_vae_sd = load_custom_vae_state_dict(bake_vae)
+            if vae_output_format in PLAIN_FORMATS:
+                target_dt = PLAIN_FORMATS[vae_output_format]
+                custom_vae_sd = {k: (v.to(target_dt) if hasattr(v, "to") else v) for k, v in custom_vae_sd.items()}
+            if hasattr(engine, "model_config") and hasattr(engine.model_config, "process_vae_state_dict_for_saving"):
+                try:
+                    processed_vae = engine.model_config.process_vae_state_dict_for_saving(custom_vae_sd)
+                except Exception:
+                    prefix = "first_stage_model." if "SDXL" in type(engine.model_config).__name__ or "SD1" in type(engine.model_config).__name__ else "vae."
+                    processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
+            else:
+                prefix = "first_stage_model."
+                processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
+            sd.update(processed_vae)
+
         sd = to_cpu_contiguous_state_dict(sd)
 
         # `sd` now holds independent CPU copies of everything we need --
@@ -299,19 +325,21 @@ def bake_lora_into_checkpoint(
         memory_management.soft_empty_cache()
         gc.collect()
 
-        metadata = _sanitize_metadata(
-            {
-                "sd_checkpoint_doctor_recipe": {
-                    "type": "CheckpointDoctor-LoRABake",
-                    "base_model": os.path.basename(checkpoint_path),
-                    "loras": applied,
-                    "save_mode": save_mode,
-                    "output_format": output_format,
-                    "clip_output_format": clip_output_format if save_full else "n/a (unet_only)",
-                    "vae_output_format": vae_output_format if save_full else "n/a (unet_only)",
-                }
-            }
-        )
+        recipe_dict = {
+            "type": "CheckpointDoctor-LoRABake",
+            "base_model": os.path.basename(checkpoint_path),
+            "loras": applied,
+            "save_mode": save_mode,
+            "output_format": output_format,
+            "clip_output_format": clip_output_format if save_full else "n/a (unet_only)",
+            "vae_output_format": vae_output_format if save_full else "n/a (unet_only)",
+        }
+        if is_custom_vae:
+            recipe_dict["baked_vae"] = os.path.basename(bake_vae)
+        elif strip_vae:
+            recipe_dict["baked_vae"] = "none (stripped)"
+
+        metadata = _sanitize_metadata({"sd_checkpoint_doctor_recipe": recipe_dict, "sd_merge_recipe": recipe_dict})
 
         if progress_cb:
             progress_cb("Saving file...")
@@ -330,7 +358,12 @@ def bake_lora_into_checkpoint(
         if note_lines:
             _write_checkpoint_notes(output_path, "Baked-in LoRA activation text(s), still required in the prompt:\n" + "\n".join(note_lines))
 
-        return {"output": output_path, "loras": applied, "output_format": output_format}
+        return {
+            "output": output_path,
+            "loras": applied,
+            "output_format": output_format,
+            "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),
+        }
     finally:
         del engine
         memory_management.soft_empty_cache()

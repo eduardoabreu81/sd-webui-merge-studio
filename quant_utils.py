@@ -143,8 +143,22 @@ def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_form
 
     actual_format, extra_kwargs = _resolve_quant_format(target_format)
     layout_name = QUANT_ALGOS[actual_format]["comfy_tensor_layout"]
+    layer_kwargs = dict(extra_kwargs)
+    if layer_kwargs.get("convrot"):
+        in_f = float_weight.shape[1] if hasattr(float_weight, "dim") and float_weight.dim() >= 2 else 0
+        if in_f > 0:
+            if in_f % 256 == 0:
+                layer_kwargs["convrot_groupsize"] = 256
+            elif in_f % 128 == 0:
+                layer_kwargs["convrot_groupsize"] = 128
+            elif in_f % 64 == 0:
+                layer_kwargs["convrot_groupsize"] = 64
+            else:
+                debug_print(f"Layer in_features {in_f} not divisible by 64/128/256; falling back to plain int8_tensorwise without rotation.")
+                layer_kwargs.pop("convrot", None)
+                layer_kwargs.pop("convrot_groupsize", None)
     try:
-        qt = QuantizedTensor.from_float(float_weight.to(torch.bfloat16), layout_name, scale="recalculate", **extra_kwargs)
+        qt = QuantizedTensor.from_float(float_weight.to(torch.bfloat16), layout_name, scale="recalculate", **layer_kwargs)
     except Exception as e:
         raise QuantConversionError(f"Failed to quantize to {target_format}: {e}") from e
     module.weight = nn.Parameter(qt, requires_grad=False)

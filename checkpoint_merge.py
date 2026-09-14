@@ -34,7 +34,8 @@ from lora_bake import (
     _pick_device,
     _write_checkpoint_notes,
 )
-from quant_utils import convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from checkpoint_inspector import load_custom_vae_state_dict
+from quant_utils import PLAIN_FORMATS, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
 INTERP_WEIGHTED_SUM = "weighted_sum"
@@ -78,6 +79,7 @@ def _build_metadata(
     add_merge_recipe: bool,
     save_mode: str = "unet_only",
     loras: list[dict] | None = None,
+    bake_vae: str | None = None,
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -103,6 +105,10 @@ def _build_metadata(
             "output_format": output_format,
             "save_mode": save_mode,
         }
+        if bake_vae and bake_vae not in ("original", "none", ""):
+            merge_recipe["baked_vae"] = os.path.basename(bake_vae)
+        elif bake_vae == "none":
+            merge_recipe["baked_vae"] = "none (stripped)"
         if loras:
             merge_recipe["baked_loras"] = [
                 {"name": a["name"], "strength": a["strength"], "llm_adapter_warning": a["llm_adapter_warning"]}
@@ -252,6 +258,7 @@ def merge_checkpoints(
     save_mode: str = "unet_only",
     loras: list[tuple[str, float]] | None = None,
     device_choice: str = "auto",
+    bake_vae: str | None = "original",
     progress_cb=None,
 ) -> dict:
     if interp_method != INTERP_NO_INTERPOLATION and not secondary_name:
@@ -331,7 +338,10 @@ def merge_checkpoints(
         else:
             merged_clip, skipped_clip = 0, []
 
-        if save_mode == "full" and vae_a is not None:
+        is_custom_vae = bool(bake_vae and bake_vae not in ("original", "none", ""))
+        strip_vae = bake_vae == "none"
+
+        if save_mode == "full" and not is_custom_vae and not strip_vae and vae_a is not None:
             if progress_cb:
                 progress_cb("Merging VAE...")
             merged_vae, skipped_vae = _merge_module_tree(
@@ -407,7 +417,7 @@ def merge_checkpoints(
                 progress_cb=(lambda i, t, n: progress_cb(f"Quantizing text encoder ({i}/{t}): {n}")) if progress_cb else None,
             )
 
-        if save_mode == "full" and vae_output_format != "same" and vae_a is not None:
+        if save_mode == "full" and not is_custom_vae and not strip_vae and vae_output_format != "same" and vae_a is not None:
             if progress_cb:
                 progress_cb(f"Converting VAE to {vae_output_format}...")
             _, vae_overrides = convert_module_tree_precision(
@@ -432,7 +442,7 @@ def merge_checkpoints(
                 clip_sd = utils.get_state_dict_after_quant(clip_a)
                 clip_sd.update(clip_overrides)
                 sd.update(engine_a.model_config.process_clip_state_dict_for_saving(clip_sd))
-            if vae_a is not None:
+            if not is_custom_vae and not strip_vae and vae_a is not None:
                 vae_sd = utils.get_state_dict_after_quant(vae_a)
                 vae_sd.update(vae_overrides)
                 sd.update(engine_a.model_config.process_vae_state_dict_for_saving(vae_sd))
@@ -446,6 +456,24 @@ def merge_checkpoints(
                     if "llm_adapter" in k:
                         suffix = k[k.index("llm_adapter") :]
                         sd[f"model.diffusion_model.{suffix}"] = v
+
+        if is_custom_vae:
+            if progress_cb:
+                progress_cb(f"Baking custom VAE: {os.path.basename(bake_vae)}...")
+            custom_vae_sd = load_custom_vae_state_dict(bake_vae)
+            if vae_output_format in PLAIN_FORMATS:
+                target_dt = PLAIN_FORMATS[vae_output_format]
+                custom_vae_sd = {k: (v.to(target_dt) if hasattr(v, "to") else v) for k, v in custom_vae_sd.items()}
+            if hasattr(engine_a, "model_config") and hasattr(engine_a.model_config, "process_vae_state_dict_for_saving"):
+                try:
+                    processed_vae = engine_a.model_config.process_vae_state_dict_for_saving(custom_vae_sd)
+                except Exception:
+                    prefix = "first_stage_model." if "SDXL" in type(engine_a.model_config).__name__ or "SD1" in type(engine_a.model_config).__name__ else "vae."
+                    processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
+            else:
+                prefix = "first_stage_model."
+                processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
+            sd.update(processed_vae)
 
         if discard_regex:
             pattern = re.compile(discard_regex)
@@ -478,6 +506,7 @@ def merge_checkpoints(
                 add_merge_recipe,
                 save_mode=save_mode,
                 loras=applied_loras if applied_loras else None,
+                bake_vae=bake_vae,
             )
         )
 
@@ -492,11 +521,12 @@ def merge_checkpoints(
 
         return {
             "output": output_path,
-            "merged": {"unet": merged_unet, "clip": merged_clip, "vae": merged_vae},
+            "merged": {"unet": merged_unet, "clip": merged_clip, "vae": (len(custom_vae_sd) if is_custom_vae else merged_vae)},
             "skipped": {"unet": skipped_unet, "clip": skipped_clip, "vae": skipped_vae},
             "output_format": output_format,
             "save_mode": save_mode,
             "loras": applied_loras,
+            "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),
         }
     finally:
         del engine_a, engine_b, engine_c

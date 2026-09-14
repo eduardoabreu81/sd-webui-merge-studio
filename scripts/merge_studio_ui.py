@@ -17,10 +17,45 @@ import checkpoint_merge  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
 import quant_repair  # noqa: E402
+from checkpoint_inspector import (
+    available_vaes,
+    format_badges_html,
+    format_recipe_dashboard_html,
+    inspect_checkpoint,
+)
 from quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
 
 NONE_LABEL = "(none)"
+ORIGINAL_VAE_LABEL = "Original / Merge from Models"
+NO_VAE_LABEL = "None (Strip VAE)"
+
+
+def _vae_choices() -> list[str]:
+    vaes = available_vaes()
+    return [ORIGINAL_VAE_LABEL, NO_VAE_LABEL] + sorted(vaes.keys())
+
+
+def checkpoint_badge_handler(name: str) -> str:
+    if not name:
+        return ""
+    try:
+        path = _checkpoint_path(name)
+        info = inspect_checkpoint(path)
+        return format_badges_html(info)
+    except Exception:
+        return ""
+
+
+def run_inspection_handler(name: str) -> str:
+    if not name:
+        return "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect.</div>"
+    try:
+        path = _checkpoint_path(name)
+        info = inspect_checkpoint(path)
+        return format_recipe_dashboard_html(info)
+    except Exception as e:
+        return _err_html(e)
 
 FORMAT_LABEL_TO_KEY = dict(OUTPUT_FORMAT_CHOICES)
 
@@ -276,7 +311,7 @@ def bake_handler(
         llm_adapter_hits = [a["name"] for a in result["loras"] if a["llm_adapter_warning"]]
         if llm_adapter_hits:
             gr.Warning(f"LoRA(s) with LLM adapter weights baked in: {', '.join(llm_adapter_hits)}. Anima's own training guidance says never to train these alongside a LoRA.", duration=10)
-            html += f"<div style='color:orange; margin-top: 6px;'>⚠️ Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
+            html += f"<div style='color:orange; margin-top: 6px;'>Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
     except lora_bake.BakeError as e:
         gr.Warning(str(e), duration=8)
@@ -353,6 +388,7 @@ def merge_handler(
     save_metadata: bool = True,
     config_source: list[str] = None,
     add_merge_recipe: bool = True,
+    bake_vae_label: str = ORIGINAL_VAE_LABEL,
 ):
     if not primary_name:
         gr.Warning("Select a Primary Model (A).")
@@ -364,6 +400,13 @@ def merge_handler(
         vae_output_format = FORMAT_LABEL_TO_KEY.get(vae_format_label, "same")
         save_mode = SAVE_MODE_LABEL_TO_KEY.get(save_mode_label, "unet_only")
         device_choice = DEVICE_LABEL_TO_KEY.get(device_label, "auto")
+
+        if bake_vae_label == ORIGINAL_VAE_LABEL:
+            bake_vae = "original"
+        elif bake_vae_label == NO_VAE_LABEL:
+            bake_vae = "none"
+        else:
+            bake_vae = bake_vae_label
 
         loras_by_name = lora_bake.available_loras()
         selected_loras = []
@@ -398,6 +441,7 @@ def merge_handler(
             save_mode=save_mode,
             loras=selected_loras if selected_loras else None,
             device_choice=device_choice,
+            bake_vae=bake_vae,
             progress_cb=progress_cb,
         )
 
@@ -406,21 +450,23 @@ def merge_handler(
         skipped_total = sum(len(v) for v in result["skipped"].values())
         size_str = _format_size(result["output"])
         loras_desc = ", ".join(f"{a['name']} ({a['strength']})" for a in result.get("loras", [])) if result.get("loras") else ""
+        baked_vae_desc = f"<b>Baked VAE:</b> <code>{result['baked_vae']}</code><br>" if result.get("baked_vae") else ""
         html = (
             f"<div style='margin-top: 10px; line-height: 1.6; font-size: 14px;'>"
             f"<b>Checkpoint saved to:</b> <code>{result['output']}</code><br>"
             f"<b>File size:</b> <span style='color: #10b981; font-weight: bold;'>{size_str}</span><br>"
             f"<b>Format:</b> <code>{result['output_format']}</code> (Mode: <code>{save_mode}</code>)<br>"
             f"<b>Merged layers:</b> UNet: {result['merged']['unet']}, CLIP: {result['merged']['clip']}, VAE: {result['merged']['vae']}<br>"
+            + baked_vae_desc
             + (f"<b>Baked LoRAs:</b> {loras_desc}<br>" if loras_desc else "")
             + f"</div>"
         )
         llm_adapter_hits = [a["name"] for a in result.get("loras", []) if a.get("llm_adapter_warning")]
         if llm_adapter_hits:
             gr.Warning(f"LoRA(s) with LLM adapter weights baked in: {', '.join(llm_adapter_hits)}. Anima's own training guidance says never to train these alongside a LoRA.", duration=10)
-            html += f"<div style='color:orange; margin-top: 6px;'>⚠️ Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
+            html += f"<div style='color:orange; margin-top: 6px;'>Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
         if skipped_total:
-            html += f"<div style='color:orange; margin-top: 6px;'>⚠️ {skipped_total} layer(s) skipped (missing or incompatible between models).</div>"
+            html += f"<div style='color:orange; margin-top: 6px;'>Warning: {skipped_total} layer(s) skipped (missing or incompatible between models).</div>"
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
     except checkpoint_merge.MergeError as e:
         gr.Warning(str(e), duration=8)
@@ -495,15 +541,25 @@ def create_merge_studio_tab():
                 gr.Markdown(COMPATIBLE_MODELS_NOTE)
                 gr.Markdown("All models (A/B/C) must be checked individually — mixing a compatible A with an incompatible B/C will be rejected with a clear error.")
                 with gr.Row():
-                    merge_primary = gr.Dropdown(label="Primary Model (A)", choices=sorted(sd_models.checkpoint_tiles()))
-                    merge_secondary = gr.Dropdown(label="Secondary Model (B)", choices=sorted(sd_models.checkpoint_tiles()))
-                    merge_tertiary = gr.Dropdown(label="Tertiary Model (C)", choices=sorted(sd_models.checkpoint_tiles()), visible=False)
+                    with gr.Column():
+                        merge_primary = gr.Dropdown(label="Primary Model (A)", choices=sorted(sd_models.checkpoint_tiles()))
+                        primary_badge = gr.HTML("")
+                    with gr.Column() as secondary_col:
+                        merge_secondary = gr.Dropdown(label="Secondary Model (B)", choices=sorted(sd_models.checkpoint_tiles()))
+                        secondary_badge = gr.HTML("")
+                    with gr.Column(visible=False) as tertiary_col:
+                        merge_tertiary = gr.Dropdown(label="Tertiary Model (C)", choices=sorted(sd_models.checkpoint_tiles()))
+                        tertiary_badge = gr.HTML("")
                     create_refresh_button(
                         [merge_primary, merge_secondary, merge_tertiary],
                         sd_models.list_models,
                         lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
                         "merge_studio_refresh_models",
                     )
+
+                merge_primary.change(fn=checkpoint_badge_handler, inputs=[merge_primary], outputs=[primary_badge], show_progress=False, queue=False)
+                merge_secondary.change(fn=checkpoint_badge_handler, inputs=[merge_secondary], outputs=[secondary_badge], show_progress=False, queue=False)
+                merge_tertiary.change(fn=checkpoint_badge_handler, inputs=[merge_tertiary], outputs=[tertiary_badge], show_progress=False, queue=False)
 
                 with gr.Row():
                     merge_interp = gr.Radio(
@@ -552,6 +608,20 @@ def create_merge_studio_tab():
                     merge_clip_format = _format_dropdown("Text encoder format (only for Full mode)")
                     merge_vae_format = _format_dropdown("VAE format (only for Full mode)")
 
+                with gr.Row(equal_height=True):
+                    merge_bake_vae = gr.Dropdown(
+                        label="Bake VAE",
+                        choices=_vae_choices(),
+                        value=ORIGINAL_VAE_LABEL,
+                        info="Choose a VAE to bake into the checkpoint. 'Original': keep source VAE. 'None': strip VAE.",
+                    )
+                    create_refresh_button(
+                        [merge_bake_vae],
+                        lambda: None,
+                        lambda: {"choices": _vae_choices()},
+                        "merge_studio_refresh_vae",
+                    )
+
                 merge_clip_format.visible = False
                 merge_vae_format.visible = False
 
@@ -579,7 +649,7 @@ def create_merge_studio_tab():
                 merge_interp.change(
                     fn=merge_update_method,
                     inputs=[merge_interp],
-                    outputs=[merge_multiplier, merge_secondary, merge_tertiary, merge_interp, merge_config_source],
+                    outputs=[merge_multiplier, secondary_col, tertiary_col, merge_interp, merge_config_source],
                     show_progress=False,
                     queue=False,
                 )
@@ -614,10 +684,32 @@ def create_merge_studio_tab():
                         merge_save_metadata,
                         merge_config_source,
                         merge_add_recipe,
+                        merge_bake_vae,
                     ],
                     outputs=[merge_primary, merge_html],
                     show_progress=False,
                 )
+
+            with gr.Tab("Model Recipe & Inspector"):
+                gr.Markdown(
+                    "Inspect any checkpoint's internal components (UNet/DiT, Text Encoder, VAE), architecture, precision, "
+                    "and full merge recipe provenance without loading weights into RAM/VRAM."
+                )
+                with gr.Row():
+                    inspector_checkpoint = gr.Dropdown(label="Checkpoint", choices=sorted(sd_models.checkpoint_tiles()))
+                    create_refresh_button(
+                        [inspector_checkpoint],
+                        sd_models.list_models,
+                        lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
+                        "merge_studio_refresh_inspector",
+                    )
+                inspector_btn = gr.Button("Inspect Checkpoint", variant="primary")
+                inspector_html = gr.HTML(
+                    "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect its components and merge recipe.</div>"
+                )
+
+                inspector_btn.click(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
+                inspector_checkpoint.change(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
 
             with gr.Tab("Quant Format Doctor"):
                 gr.Markdown(
@@ -664,6 +756,8 @@ def create_merge_studio_tab():
             merge_format,
             merge_clip_format,
             merge_vae_format,
+            merge_bake_vae,
+            inspector_checkpoint,
             merge_save_metadata,
             merge_config_source,
             merge_add_recipe,
