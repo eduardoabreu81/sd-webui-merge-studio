@@ -1,0 +1,94 @@
+/* Checkpoint Doctor Styling */
+
+.cd-progress-container {
+    margin: 12px 0 16px 0 !important;
+    padding: 12px 14px !important;
+    border-radius: 8px !important;
+    background: var(--neutral-900, #111827) !important;
+    border: 1px solid var(--border-color-primary, #374151) !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+.cd-live-status {
+    margin: 0 0 8px 0 !important;
+    padding: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    color: var(--body-text-color, #f3f4f6) !important;
+    font-size: 13.5px !important;
+    font-weight: 500 !important;
+    line-height: 1.4 !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    word-break: break-all !important;
+}
+
+.cd-pct-badge {
+    color: var(--primary-500, #f97316) !important;
+    font-size: 14px !important;
+    font-family: monospace !important;
+}
+
+.cd-progress-container .progressDiv,
+#merge_studio_merge_panel .progressDiv,
+#merge_studio_fix_panel .progressDiv,
+#checkpoint_doctor_bake_panel .progressDiv,
+#checkpoint_doctor_merge_panel .progressDiv,
+#checkpoint_doctor_quantize_panel .progressDiv,
+#checkpoint_doctor_diagnose_panel .progressDiv,
+#checkpoint_doctor_fix_panel .progressDiv {
+    margin: 6px 0 0 0 !important;
+    height: 18px !important;
+    border-radius: 6px !important;
+    background-color: var(--neutral-800, #1f2937) !important;
+    border: 1px solid var(--border-color-primary, #374151) !important;
+    overflow: hidden !important;
+    position: relative !important;
+    display: block !important;
+    font-size: 0 !important;
+    color: transparent !important;
+    line-height: 0 !important;
+    text-shadow: none !important;
+}
+
+.cd-progress-container .progress,
+#merge_studio_merge_panel .progress,
+#merge_studio_fix_panel .progress,
+#checkpoint_doctor_bake_panel .progress,
+#checkpoint_doctor_merge_panel .progress,
+#checkpoint_doctor_quantize_panel .progress,
+#checkpoint_doctor_diagnose_panel .progress,
+#checkpoint_doctor_fix_panel .progress {
+    height: 100% !important;
+    line-height: 0 !important;
+    border-radius: 5px !important;
+    background: linear-gradient(90deg, var(--primary-600, #ea580c), var(--primary-500, #f97316)) !important;
+    font-size: 0 !important;
+    color: transparent !important;
+    text-shadow: none !important;
+    user-select: none !important;
+    transition: width 0.25s ease !important;
+}
+
+.cd-progress-container .progressDiv *,
+#merge_studio_merge_panel .progressDiv *,
+#merge_studio_fix_panel .progressDiv * {
+    font-size: 0 !important;
+    color: transparent !important;
+    text-shadow: none !important;
+    line-height: 0 !important;
+    user-select: none !important;
+}
+
+.cd-live-status .cd-spinner {
+    display: inline-block;
+    animation: cd-spin 1.5s linear infinite;
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+@keyframes cd-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
