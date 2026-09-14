@@ -39,7 +39,10 @@ that repairs a common metadata bug found in community int8 checkpoints.
 - **Bake up to 3 LoRAs** into the merge in the same pass, each with its own strength
 - **UNet Only** or **Full Checkpoint** (UNet + CLIP + VAE) save modes
 - Per-component output format: diffusion model, text encoder, and VAE can each target a
-  different precision
+  different precision — **FP16**, **BF16**, **FP8** (e4m3fn / e5m2), **INT8** (tensor-wise or
+  per-channel + Hadamard rotation — "convrot", the scheme most community Anima int8 builds
+  actually use), **NVFP4**, or **INT4** (convrot W4A4). Pick **No Interpolation** with a single
+  model to just convert/quantize a checkpoint with no merge involved
 - **Device control** — Auto, force GPU, or force CPU, with a safety margin check before
   picking GPU so large merges don't silently OOM
 - **Discard layers by regex** and **metadata control** — copy metadata from A/B/C individually,
@@ -55,13 +58,6 @@ that repairs a common metadata bug found in community int8 checkpoints.
 - **Anima-aware**: activation text is normalized to Anima's lowercase, space-separated
   convention, and LoRAs carrying LLM (Qwen3) adapter weights are flagged with a warning —
   Anima's own training guidance says never to train those alongside a LoRA
-
-### 🔄 Quantize / Convert Precision
-- Standalone conversion of a checkpoint's diffusion model to a new precision with no merge or
-  LoRA involved
-- Supported targets: **FP16**, **BF16**, **FP8** (e4m3fn / e5m2), **INT8** (tensor-wise or
-  per-channel + Hadamard rotation — "convrot", the scheme most community Anima int8 builds
-  actually use), **NVFP4**, and **INT4** (convrot W4A4)
 
 ### 🩺 Quant Format Doctor
 - Diagnoses and repairs `.safetensors` checkpoints whose `comfy_quant` metadata is missing the
