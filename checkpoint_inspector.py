@@ -35,7 +35,7 @@ def read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
 
 
 def _detect_architecture(keys: list[str], has_llm_adapter: bool) -> str:
-    if any(k.startswith(("double_blocks.", "model.diffusion_model.double_blocks.")) for k in keys):
+    if any(k.startswith(("double_blocks.", "model.diffusion_model.double_blocks.", "img_in.")) for k in keys):
         return "Flux (MMDiT)"
     if any(k.startswith(("model.diffusion_model.joint_blocks.", "joint_blocks.")) for k in keys):
         return "SD3 / SD3.5 (MMDiT)"
@@ -53,7 +53,7 @@ def _detect_architecture(keys: list[str], has_llm_adapter: bool) -> str:
         # Heuristic for SDXL vs SD 1.5 if text encoder is missing
         # SDXL has 3 stages (320, 640, 1280) while SD 1.5 has 4 stages (320, 640, 1280, 1280)
         has_stage_3 = any("input_blocks.9." in k or "input_blocks.10." in k or "input_blocks.11." in k for k in keys)
-        return "SD 1.5 (UNet Only)" if has_stage_3 else "SDXL (UNet Only)"
+        return "SD 1.5 / SD 2.1 (UNet)" if has_stage_3 else "SDXL (UNet)"
     return "Diffusion Model"
 
 
