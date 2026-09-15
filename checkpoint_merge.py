@@ -101,12 +101,16 @@ def _build_metadata(
         merge_recipe = {
             "type": "MergeStudio-AnimaMerge",
             "interp_method": interp_method,
-            "multiplier": multiplier,
             "discard_weights": discard_regex,
             "config_source": list(config_source),
             "output_format": output_format,
             "save_mode": save_mode,
         }
+        # No Interpolation takes a single model, so the multiplier slider's
+        # value never entered the result. Recording it anyway leaves a number
+        # in the recipe that reads like a blend ratio and means nothing.
+        if interp_method != INTERP_NO_INTERPOLATION:
+            merge_recipe["multiplier"] = multiplier
         if bake_vae and bake_vae not in ("original", "none", ""):
             merge_recipe["baked_vae"] = os.path.basename(bake_vae)
         elif bake_vae == "none":

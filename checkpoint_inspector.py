@@ -543,6 +543,63 @@ def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any
     return html
 
 
+def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, str]:
+    """(readable method label, HTML for the formula line).
+
+    The multiplier means a different thing per method, and for one of them it
+    means nothing at all -- No Interpolation takes a single model, so there is
+    no Model B to be a percentage of. Describing every method as a blend, which
+    is what a single shared format did, is wrong for two of the three.
+    """
+    key = raw_method.strip().lower().replace(" ", "_")
+
+    def _line(body: str) -> str:
+        return (
+            f"<div style='margin-bottom: 12px; font-size: 13px; color: #d1d5db;'>{body}</div>"
+        )
+
+    try:
+        m = float(recipe.get("multiplier"))
+    except (TypeError, ValueError):
+        m = None
+
+    if "no_interpolation" in key:
+        # Format/precision conversion or a LoRA bake: one model in, one out.
+        return "No Interpolation", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A</code> "
+            "<span style='color:#9ca3af;'>&mdash; single model, converted or baked into rather than blended. "
+            "No multiplier applies.</span>"
+        )
+
+    if "add_difference" in key:
+        m_txt = f"{m:.2f}" if m is not None else "M"
+        return "Add Difference", _line(
+            f"<b>Formula:</b> <code style='color: #f97316;'>A + {m_txt} &times; (B &minus; C)</code> "
+            f"<span style='color:#9ca3af;'>&mdash; what B learned over C, transplanted onto A. "
+            f"Not a blend ratio.</span>"
+        )
+
+    if "weighted_sum" in key:
+        if m is None:
+            return "Weighted Sum", _line("<b>Formula:</b> <code style='color: #f97316;'>A &times; (1 &minus; M) + B &times; M</code>")
+        return "Weighted Sum", _line(
+            f"<b>Multiplier (M):</b> <code style='color: #f97316;'>{m:.2f}</code> "
+            f"<span style='color:#9ca3af;'>&mdash; {round((1 - m) * 100)}% Model A / {round(m * 100)}% Model B</span>"
+        )
+
+    if "lorabake" in key.replace("-", "").replace("_", ""):
+        return "LoRA Bake", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A + baked LoRA(s)</code> "
+            "<span style='color:#9ca3af;'>&mdash; per-LoRA strengths are listed below.</span>"
+        )
+
+    # Unknown method: show the multiplier if there is one, but don't claim to
+    # know what it means.
+    if m is not None:
+        return raw_method, _line(f"<b>Multiplier:</b> <code style='color: #f97316;'>{m:.2f}</code>")
+    return raw_method, ""
+
+
 def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     """Generates the full styled dashboard card for the dedicated Recipe Inspector tab."""
     if not info:
@@ -620,13 +677,8 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     # Recipe section HTML
     recipe_html = ""
     if recipe:
-        method = recipe.get("interp_method", recipe.get("type", "Custom Merge"))
-        mult = recipe.get("multiplier", "N/A")
-        try:
-            mult_val = float(mult)
-            mult_desc = f"{mult_val:.2f} ({int((1 - mult_val)*100)}% Model A / {int(mult_val*100)}% Model B)"
-        except Exception:
-            mult_desc = str(mult)
+        raw_method = str(recipe.get("interp_method", recipe.get("type", "Custom Merge")))
+        method, math_html = _describe_merge_math(raw_method, recipe)
 
         # Lookup model names from models dict
         p_hash = recipe.get("primary_model_hash", "")
@@ -680,9 +732,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"<span>Merge Recipe Detected</span></div>"
             f"<span style='font-size: 12px; background: rgba(249,115,22,0.2); color: #f97316; padding: 3px 8px; border-radius: 4px;'>Method: {method}</span>"
             f"</div>"
-            f"<div style='margin-bottom: 12px; font-size: 13px; color: #d1d5db;'>"
-            f"<b>Multiplier (M):</b> <code style='color: #f97316;'>{mult_desc}</code>"
-            f"</div>"
+            f"{math_html}"
             f"<div style='margin-top: 10px;'>{models_cards}</div>"
             f"{loras_html}"
             f"</div>"
