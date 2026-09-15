@@ -45,23 +45,35 @@ _LORA_PREFIXES = (
 # The diff-style markers keep their surrounding dots: a bare "diff" is a
 # substring of "model.diffusion_model.", which would match every key of an
 # ordinary checkpoint.
+# Taken from the adapters Forge actually registers, in
+# modules_forge/packages/comfy/weight_adapter/: lora, loha, lokr, oft, oftv2,
+# boft and glora. Reading their key names from the source beats recalling
+# LyCORIS conventions, and keeps this list aligned with what will really load.
 _FACTOR_MARKERS = (
-    "lora_down", "lora_up", "lora_A", "lora_B",   # LoRA
-    "hada_w",                                      # LoHa
-    "lokr_w",                                      # LoKr
-    "oft_blocks", "oft_diag",                      # OFT / BOFT
+    "lora_down", "lora_up", "lora_A", "lora_B",    # LoRA
+    "lora.down.weight", "lora.up.weight",          # LoRA, diffusers spelling
+    "lora_linear_layer.",                          # LoRA, another diffusers spelling
+    "hada_w", "hada_t",                            # LoHa
+    "lokr_w", "lokr_t",                            # LoKr
+    "oft_blocks", "oft_R.",                        # OFT / BOFT / OFTv2
     "dora_scale",                                  # DoRA, layered on the above
     ".diff.", ".diff_b",                           # plain difference patches
 )
+
+# GLoRA names its factors a1/a2/b1/b2, which are too generic to test one at a
+# time, so it is recognised only when the pair appears together.
+_GLORA_MARKERS = (".a1.weight", ".b1.weight")
 
 # (marker, name) in priority order -- the first hit names the algorithm.
 _ALGORITHMS = (
     ("hada_w", "LoHa (LyCORIS, Hadamard product)"),
     ("lokr_w", "LoKr (LyCORIS, Kronecker product)"),
-    ("oft_blocks", "OFT (orthogonal fine-tuning)"),
-    ("oft_diag", "BOFT (butterfly orthogonal)"),
+    ("oft_R.", "OFTv2 (orthogonal fine-tuning)"),
+    ("oft_blocks", "OFT / BOFT (orthogonal fine-tuning)"),
     ("lora_down", "LoRA"),
     ("lora_A", "LoRA"),
+    ("lora.down.weight", "LoRA"),
+    ("lora_linear_layer.", "LoRA"),
     (".diff.", "Plain difference patch"),
 )
 
@@ -133,11 +145,17 @@ def _foreign_layout(keys: list[str]) -> str | None:
     return None
 
 
+def _is_glora(joined: str) -> bool:
+    return all(m in joined for m in _GLORA_MARKERS)
+
+
 def _lora_algorithm(keys: list[str]) -> str:
     """Which adapter algorithm the file uses. DoRA is a modifier rather than a
     format of its own, so it is appended to whatever it sits on top of."""
     joined = "\n".join(keys)
-    name = next((n for marker, n in _ALGORITHMS if marker in joined), "Unrecognised adapter format")
+    name = next((n for marker, n in _ALGORITHMS if marker in joined), None)
+    if name is None:
+        name = "GLoRA" if _is_glora(joined) else "Unrecognised adapter format"
     if "dora_scale" in joined:
         name += " + DoRA"
     return name
@@ -440,7 +458,8 @@ def detect_file_kind(filepath: str) -> str:
     if not keys:
         return "unknown"
 
-    if any(any(m in k for m in _FACTOR_MARKERS) for k in keys):
+    joined = "\n".join(keys)
+    if any(m in joined for m in _FACTOR_MARKERS) or _is_glora(joined):
         return "lora"
 
     diffusion_markers = (

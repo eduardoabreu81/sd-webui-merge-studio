@@ -190,6 +190,25 @@ What the sweep turned up that hand-picked samples had not:
   `lora_name` reached the dedup step as a list. Both files now inspect cleanly and
   recover turbo detection that the crash had been swallowing.
 
+### Adapter formats Forge accepts
+
+Taken from `modules_forge/packages/comfy/weight_adapter/`, whose `__init__.py`
+registers exactly seven adapters. Reading their key names from the source beats
+recalling LyCORIS conventions:
+
+| adapter | key names it looks for |
+| :--- | :--- |
+| LoRA | `lora_down` / `lora_up`, `lora_A` / `lora_B`, `lora.down.weight` / `lora.up.weight`, `lora_linear_layer.*`, `lora_mid` |
+| LoHa | `hada_w1_a/b`, `hada_w2_a/b`, `hada_t1/t2` |
+| LoKr | `lokr_w1`, `lokr_w2`, `lokr_w1_a/b`, `lokr_w2_a/b`, `lokr_t2` |
+| OFT / BOFT | `oft_blocks`, `rescale` |
+| OFTv2 | `oft_R.weight`, `oft_R.scaled_oft` |
+| GLoRA | `a1.weight`, `a2.weight`, `b1.weight`, `b2.weight` |
+
+GLoRA's names are too generic to test one at a time, so it is recognised only
+when the pair appears together. Anything using these formats bakes exactly like
+a plain LoRA, since Forge applies them all through the same path.
+
 ## Method notes
 
 - **HTTP Range beats downloading.** Civitai's signed URLs and HuggingFace
