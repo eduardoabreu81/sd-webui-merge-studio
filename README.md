@@ -41,7 +41,7 @@ found in community int8 checkpoints.
   quantized sources
 - Every source model resolved through the real Forge loader and re-quantized on save through
   its own weight-setting logic, instead of touching raw tensors directly
-- **Bake up to 3 LoRAs** into the merge in the same pass, each with its own strength, using
+- **Bake multiple LoRAs dynamically** into the merge in the same pass (up to 10 with addable/removable slots), each with its own strength, using
   Forge's own LoRA-application pipeline (not a reimplementation) so results match what you'd
   get applying the LoRA live
   - Trigger words from a LoRA's "Activation Text" metadata are written into the output

@@ -372,12 +372,6 @@ def merge_handler(
     tertiary_name: str,
     interp_label: str,
     multiplier: float,
-    lora1: str = NONE_LABEL,
-    strength1: float = 1.0,
-    lora2: str = NONE_LABEL,
-    strength2: float = 1.0,
-    lora3: str = NONE_LABEL,
-    strength3: float = 1.0,
     save_mode_label: str = SAVE_MODE_CHOICES[0][0],
     device_label: str = DEVICE_CHOICES[0][0],
     output_filename: str = "",
@@ -389,6 +383,7 @@ def merge_handler(
     config_source: list[str] = None,
     add_merge_recipe: bool = True,
     bake_vae_label: str = ORIGINAL_VAE_LABEL,
+    *lora_args,
 ):
     if not primary_name:
         gr.Warning("Select a Primary Model (A).")
@@ -410,11 +405,18 @@ def merge_handler(
 
         loras_by_name = lora_bake.available_loras()
         selected_loras = []
-        for name, strength in ((lora1, strength1), (lora2, strength2), (lora3, strength3)):
-            if name and name != NONE_LABEL:
-                if name not in loras_by_name:
-                    raise ValueError(f"LoRA not found: {name}")
-                selected_loras.append((loras_by_name[name], strength))
+        for i in range(0, len(lora_args), 2):
+            if i + 1 < len(lora_args):
+                name = lora_args[i]
+                strength = lora_args[i + 1]
+                if name and name != NONE_LABEL:
+                    if name not in loras_by_name:
+                        raise ValueError(f"LoRA not found: {name}")
+                    try:
+                        str_val = float(strength)
+                    except Exception:
+                        str_val = 1.0
+                    selected_loras.append((loras_by_name[name], str_val))
 
         if not output_filename:
             raise ValueError("Enter an output filename.")
@@ -571,10 +573,12 @@ def create_merge_studio_tab():
                     merge_multiplier = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.05, label="Multiplier (M)")
 
                 with gr.Accordion("Bake LoRA(s) into Checkpoint (Optional)", open=False):
-                    gr.Markdown("Optionally apply up to 3 LoRAs (e.g. Turbo LoRA) directly into the checkpoint, saving an entire step and disk space.")
+                    gr.Markdown("Optionally apply one or multiple LoRAs (e.g. Turbo LoRA, Style LoRAs) directly into the checkpoint weights.")
+                    MAX_LORAS = 10
                     merge_lora_rows = []
-                    for i in range(1, 4):
-                        with gr.Row():
+                    merge_lora_row_layouts = []
+                    for i in range(1, MAX_LORAS + 1):
+                        with gr.Row(visible=(i == 1)) as lora_row_layout:
                             merge_lora_dd = gr.Dropdown(label=f"LoRA {i}", choices=_lora_choices(), value=NONE_LABEL)
                             merge_strength = gr.Slider(
                                 label="Strength",
@@ -582,10 +586,53 @@ def create_merge_studio_tab():
                                 maximum=2.0,
                                 value=1.0,
                                 step=0.05,
-                                info="For Anima checkpoints, consider starting around 0.6-0.8 (e.g. 0.6 for Turbo).",
+                                info="For Anima checkpoints, consider starting around 0.6-0.8 (e.g. 0.6 for Turbo)." if i == 1 else None,
                             )
                             create_refresh_button([merge_lora_dd], lambda: None, lambda: {"choices": _lora_choices()}, f"merge_studio_lora_refresh_{i}")
-                        merge_lora_rows.append((merge_lora_dd, merge_strength))
+                            merge_lora_rows.append((merge_lora_dd, merge_strength))
+                            merge_lora_row_layouts.append(lora_row_layout)
+
+                    with gr.Row():
+                        add_lora_btn = gr.Button("Add LoRA", variant="secondary")
+                        remove_lora_btn = gr.Button("Remove LoRA", variant="secondary")
+                        clear_loras_btn = gr.Button("Clear All LoRAs", variant="secondary")
+
+                    lora_count_state = gr.State(value=1)
+
+                    def add_lora_slot(count):
+                        new_count = min(count + 1, MAX_LORAS)
+                        return [new_count] + [gr.update(visible=(i < new_count)) for i in range(MAX_LORAS)]
+
+                    def remove_lora_slot(count):
+                        new_count = max(1, count - 1)
+                        row_updates = [gr.update(visible=(i < new_count)) for i in range(MAX_LORAS)]
+                        val_updates = [gr.update(value=NONE_LABEL) if i >= new_count else gr.update() for i in range(MAX_LORAS)]
+                        return [new_count] + row_updates + val_updates
+
+                    def clear_all_slots():
+                        row_updates = [gr.update(visible=(i == 0)) for i in range(MAX_LORAS)]
+                        val_updates = [gr.update(value=NONE_LABEL) for _ in range(MAX_LORAS)]
+                        str_updates = [gr.update(value=1.0) for _ in range(MAX_LORAS)]
+                        return [1] + row_updates + val_updates + str_updates
+
+                    add_lora_btn.click(
+                        fn=add_lora_slot,
+                        inputs=[lora_count_state],
+                        outputs=[lora_count_state] + merge_lora_row_layouts,
+                        queue=False,
+                    )
+                    remove_lora_btn.click(
+                        fn=remove_lora_slot,
+                        inputs=[lora_count_state],
+                        outputs=[lora_count_state] + merge_lora_row_layouts + [dd for dd, _ in merge_lora_rows],
+                        queue=False,
+                    )
+                    clear_loras_btn.click(
+                        fn=clear_all_slots,
+                        inputs=[],
+                        outputs=[lora_count_state] + merge_lora_row_layouts + [dd for dd, _ in merge_lora_rows] + [st for _, st in merge_lora_rows],
+                        queue=False,
+                    )
 
                 merge_save_mode = gr.Radio(
                     choices=[label for label, _ in SAVE_MODE_CHOICES],
@@ -668,12 +715,6 @@ def create_merge_studio_tab():
                         merge_tertiary,
                         merge_interp,
                         merge_multiplier,
-                        merge_lora_rows[0][0],
-                        merge_lora_rows[0][1],
-                        merge_lora_rows[1][0],
-                        merge_lora_rows[1][1],
-                        merge_lora_rows[2][0],
-                        merge_lora_rows[2][1],
                         merge_save_mode,
                         merge_device,
                         merge_output_name,
@@ -685,6 +726,7 @@ def create_merge_studio_tab():
                         merge_config_source,
                         merge_add_recipe,
                         merge_bake_vae,
+                        *[c for pair in merge_lora_rows for c in pair],
                     ],
                     outputs=[merge_primary, merge_html],
                     show_progress=False,
