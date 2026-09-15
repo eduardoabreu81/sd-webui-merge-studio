@@ -35,6 +35,7 @@ from lora_bake import (
     _write_checkpoint_notes,
 )
 from checkpoint_inspector import load_custom_vae_state_dict
+import anima_remap
 from quant_utils import PLAIN_FORMATS, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
@@ -80,6 +81,7 @@ def _build_metadata(
     save_mode: str = "unet_only",
     loras: list[dict] | None = None,
     bake_vae: str | None = None,
+    anima_remap: dict | None = None,
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -109,6 +111,14 @@ def _build_metadata(
             merge_recipe["baked_vae"] = os.path.basename(bake_vae)
         elif bake_vae == "none":
             merge_recipe["baked_vae"] = "none (stripped)"
+        if anima_remap:
+            merge_recipe["anima_remap"] = {
+                "from_blocks": anima_remap["from_blocks"],
+                "to_blocks": anima_remap["to_blocks"],
+                "merged_blocks": anima_remap["frozen_blocks"],
+                "inserted_blocks": anima_remap["inserted_blocks"],
+                "extend_ratio": anima_remap.get("extend_ratio", 0.0),
+            }
         if loras:
             merge_recipe["baked_loras"] = [
                 {"name": a["name"], "strength": a["strength"], "llm_adapter_warning": a["llm_adapter_warning"]}
@@ -138,6 +148,82 @@ def _build_metadata(
     return metadata
 
 
+def _guard_anima_block_order(primary_insp, other_insp, fam_primary, fam_other, label):
+    """Rejects an Anima pairing where B/C is a NEWER (larger) generation than A,
+    before any engine is loaded -- the merge output is always A's architecture,
+    and there is no defined way to collapse a larger model's blocks onto a
+    smaller one. Reads block counts from the .safetensors header, so this
+    costs microseconds and runs before the expensive load."""
+    if fam_primary != "anima" or fam_other != "anima":
+        return
+    blocks_a = primary_insp.get("block_count")
+    blocks_other = other_insp.get("block_count")
+    if blocks_a is None or blocks_other is None or blocks_other <= blocks_a:
+        return
+    raise MergeError(
+        f"Wrong model order: {label} has {blocks_other} blocks but Primary Model (A) has only {blocks_a}. "
+        f"Anima's newer generations add blocks, and the merge output always takes Model A's architecture, "
+        f"so the larger model must be A. Swap them (put the {blocks_other}-block model in A and the "
+        f"{blocks_a}-block model in {label})."
+    )
+
+
+def _build_anima_translator(engine_a, engine_b, engine_c, diffusion_a, diffusion_b, diffusion_c):
+    """Anima's generations (28 / 40 / 52 blocks) were each built by inserting
+    new blocks between the previous generation's, so a name-for-name merge
+    lines up unrelated layers. When A and B (and C) are Anima checkpoints of
+    different generations, returns a dict carrying a name translator that
+    rewrites A's block indices into B/C's, plus a human-readable note.
+
+    Returns None when no remapping is needed or the models aren't Anima.
+    Raises MergeError if the merge is impossible in the requested direction.
+    """
+    if diffusion_b is None:
+        return None
+    if not all(anima_remap.is_anima_engine(e) for e in (engine_a, engine_b) if e is not None):
+        return None
+    if engine_c is not None and not anima_remap.is_anima_engine(engine_c):
+        return None
+
+    blocks_a = anima_remap.block_count(diffusion_a)
+    blocks_b = anima_remap.block_count(diffusion_b)
+    if blocks_a is None or blocks_b is None or blocks_a == blocks_b:
+        # Same generation (or not a block-list model): plain name matching.
+        if diffusion_c is not None and anima_remap.block_count(diffusion_c) not in (None, blocks_a):
+            raise MergeError(
+                "Add Difference across Anima generations requires Model B and Model C to have the "
+                f"same block count (B has {blocks_b}, C has {anima_remap.block_count(diffusion_c)})."
+            )
+        return None
+
+    if diffusion_c is not None:
+        blocks_c = anima_remap.block_count(diffusion_c)
+        if blocks_c is not None and blocks_c != blocks_b:
+            raise MergeError(
+                "Add Difference across Anima generations requires Model B and Model C to have the "
+                f"same block count (B has {blocks_b}, C has {blocks_c})."
+            )
+
+    try:
+        mapping = anima_remap.target_to_source(blocks_b, blocks_a)
+    except anima_remap.AnimaRemapError as e:
+        raise MergeError(str(e)) from e
+
+    frozen, inserted = anima_remap.split_frozen_inserted(mapping)
+    return {
+        "translate": anima_remap.make_name_translator(frozen),
+        "extend": anima_remap.make_extend_translator(inserted),
+        "from_blocks": blocks_b,
+        "to_blocks": blocks_a,
+        "frozen_blocks": len(frozen),
+        "inserted_blocks": len(inserted),
+        "message": (
+            f"Anima cross-generation merge: remapping {blocks_b}-block -> {blocks_a}-block "
+            f"({len(frozen)} shared blocks merged, {len(inserted)} inserted blocks kept from Model A)"
+        ),
+    }
+
+
 def _merge_module_tree(
     module_a: nn.Module | None,
     module_b: nn.Module | None,
@@ -146,7 +232,20 @@ def _merge_module_tree(
     multiplier: float,
     target_device: torch.device | None = None,
     progress_cb=None,
+    translate_name=None,
+    extend_name=None,
+    extend_ratio: float = 0.0,
 ) -> tuple[int, list[str]]:
+    """translate_name: optional f(name_in_a) -> name_in_b_and_c, or None when
+    the A-side module has no counterpart on the other side (used for
+    cross-generation Anima merges, where B's block indices are shifted).
+    Defaults to matching module names one-for-one.
+
+    extend_name / extend_ratio: for A-side modules that translate_name maps to
+    None (blocks the newer generation inserted, which have no counterpart),
+    extend_name gives the B-side module the inserted block was originally
+    copied from at initialization. With extend_ratio > 0 that module is
+    blended in at that weight instead of the block being left untouched."""
     if module_a is None:
         return 0, []
     named_a = dict(module_a.named_modules())
@@ -170,7 +269,14 @@ def _merge_module_tree(
                 progress_cb(i + 1, total, name)
             continue
 
-        m_b = named_b.get(name)
+        lookup = translate_name(name) if translate_name is not None else name
+        # An inserted block has no counterpart; extend_ratio optionally blends
+        # in the block it was copied from instead of leaving it at A's weights.
+        effective_multiplier = multiplier
+        if lookup is None and extend_name is not None and extend_ratio > 0.0:
+            lookup = extend_name(name)
+            effective_multiplier = extend_ratio
+        m_b = named_b.get(lookup) if lookup is not None else None
         if m_b is None:
             skipped.append(name)
             continue
@@ -186,9 +292,9 @@ def _merge_module_tree(
             w_b = w_b.to(device=dev)
 
         if interp_method == INTERP_WEIGHTED_SUM:
-            merged = w_a.lerp(w_b, multiplier)
+            merged = w_a.lerp(w_b, effective_multiplier)
         elif interp_method == INTERP_ADD_DIFFERENCE:
-            m_c = named_c.get(name)
+            m_c = named_c.get(lookup)
             if m_c is None:
                 skipped.append(name)
                 continue
@@ -198,7 +304,7 @@ def _merge_module_tree(
                 continue
             if w_c.device != dev:
                 w_c = w_c.to(device=dev)
-            merged = w_a + multiplier * (w_b - w_c)
+            merged = w_a + effective_multiplier * (w_b - w_c)
             del w_c
         else:
             raise MergeError(f"Unknown interpolation method: {interp_method}")
@@ -219,15 +325,15 @@ def _merge_module_tree(
                     b_b_f = b_b_f.to(device=dev)
 
                 if interp_method == INTERP_WEIGHTED_SUM:
-                    new_bias = b_a.lerp(b_b_f, multiplier)
+                    new_bias = b_a.lerp(b_b_f, effective_multiplier)
                 else:
-                    m_c = named_c.get(name)
+                    m_c = named_c.get(lookup)
                     b_c = getattr(m_c, "bias", None) if m_c is not None else None
                     if b_c is not None and b_c.shape == b_a.shape:
                         b_c_f = b_c.data.float()
                         if b_c_f.device != dev:
                             b_c_f = b_c_f.to(device=dev)
-                        new_bias = b_a + multiplier * (b_b_f - b_c_f)
+                        new_bias = b_a + effective_multiplier * (b_b_f - b_c_f)
                         del b_c_f
                     else:
                         new_bias = None
@@ -259,6 +365,7 @@ def merge_checkpoints(
     loras: list[tuple[str, float]] | None = None,
     device_choice: str = "auto",
     bake_vae: str | None = "original",
+    anima_extend_ratio: float = 0.0,
     progress_cb=None,
 ) -> dict:
     if interp_method != INTERP_NO_INTERPOLATION and not secondary_name:
@@ -279,6 +386,7 @@ def merge_checkpoints(
         if secondary_info:
             s_insp = inspect_checkpoint(secondary_info.filename)
             fam_b = get_model_family(s_insp.get("architecture", ""))
+            _guard_anima_block_order(p_insp, s_insp, fam_a, fam_b, "Secondary Model (B)")
             if fam_a != "other" and fam_b != "other" and fam_a != fam_b:
                 arch_a = p_insp.get("architecture", "Unknown")
                 arch_b = s_insp.get("architecture", "Unknown")
@@ -287,6 +395,7 @@ def merge_checkpoints(
         if tertiary_info:
             t_insp = inspect_checkpoint(tertiary_info.filename)
             fam_c = get_model_family(t_insp.get("architecture", ""))
+            _guard_anima_block_order(p_insp, t_insp, fam_a, fam_c, "Tertiary Model (C)")
             if fam_a != "other" and fam_c != "other" and fam_a != fam_c:
                 arch_a = p_insp.get("architecture", "Unknown")
                 arch_c = t_insp.get("architecture", "Unknown")
@@ -345,12 +454,30 @@ def merge_checkpoints(
         if target_device.type == "cpu":
             memory_management.soft_empty_cache()
 
+        # Cross-generation Anima: block indices shifted when each generation
+        # inserted new blocks, so B/C must be looked up by translated name.
+        anima_remap_note = _build_anima_translator(
+            engine_a, engine_b, engine_c,
+            diffusion_a, diffusion_b, diffusion_c,
+        )
+        unet_translate = anima_remap_note.pop("translate", None) if anima_remap_note else None
+        unet_extend = anima_remap_note.pop("extend", None) if anima_remap_note else None
+        if anima_remap_note:
+            anima_remap_note["extend_ratio"] = anima_extend_ratio
+            if anima_extend_ratio > 0.0:
+                anima_remap_note["message"] += f", inserted blocks blended at extend_ratio={anima_extend_ratio}"
+            if progress_cb:
+                progress_cb(anima_remap_note["message"])
+
         if progress_cb:
             progress_cb("Merging diffusion model...")
         merged_unet, skipped_unet = _merge_module_tree(
             diffusion_a, diffusion_b, diffusion_c, interp_method, multiplier,
             target_device=target_device,
             progress_cb=(lambda i, t, n: progress_cb(f"Merging UNet ({i}/{t}): {n}")) if progress_cb else None,
+            translate_name=unet_translate,
+            extend_name=unet_extend,
+            extend_ratio=anima_extend_ratio,
         )
 
         if clip_a is not None:
@@ -533,6 +660,7 @@ def merge_checkpoints(
                 save_mode=save_mode,
                 loras=applied_loras if applied_loras else None,
                 bake_vae=bake_vae,
+                anima_remap=anima_remap_note,
             )
         )
 
@@ -549,6 +677,7 @@ def merge_checkpoints(
             "output": output_path,
             "merged": {"unet": merged_unet, "clip": merged_clip, "vae": (len(custom_vae_sd) if is_custom_vae else merged_vae)},
             "skipped": {"unet": skipped_unet, "clip": skipped_clip, "vae": skipped_vae},
+            "anima_remap": anima_remap_note,
             "output_format": output_format,
             "save_mode": save_mode,
             "loras": applied_loras,

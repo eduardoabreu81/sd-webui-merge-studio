@@ -16,6 +16,8 @@ import os
 import struct
 from typing import Any
 
+from anima_remap import block_count_from_keys
+
 
 def read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
     """Reads the JSON header from a .safetensors file without loading weights."""
@@ -350,6 +352,7 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         "file_size": file_size,
         "size_str": size_str,
         "architecture": arch,
+        "block_count": block_count_from_keys(keys),
         "precision": precision,
         "total_tensors": len(keys),
         "components": {
@@ -507,6 +510,20 @@ def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any
         fam_self = get_model_family(arch)
         arch_other = compatible_with_info.get("architecture", "Unknown")
         fam_other = get_model_family(arch_other)
+        blocks_self = info.get("block_count")
+        blocks_other = compatible_with_info.get("block_count")
+        if (
+            fam_self == fam_other == "anima"
+            and blocks_self is not None
+            and blocks_other is not None
+            and blocks_self > blocks_other
+        ):
+            html += (
+                f"<div style='margin-top: 4px; padding: 4px 8px; border-radius: 4px; background: rgba(245, 158, 11, 0.15); border: 1px solid #f59e0b; color: #fcd34d; font-size: 11.5px; font-weight: 600;'>"
+                f"Wrong order: this model has {blocks_self} blocks but Model A has only {blocks_other}. "
+                f"The <b>newer / larger</b> Anima generation must be <b>Primary Model (A)</b>, with an equal or older one here. Swap them."
+                f"</div>"
+            )
         if fam_self != "other" and fam_other != "other" and fam_self != fam_other:
             html += (
                 f"<div style='margin-top: 4px; padding: 4px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; font-size: 11.5px; font-weight: 600;'>"

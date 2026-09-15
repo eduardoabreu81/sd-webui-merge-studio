@@ -12,7 +12,7 @@
 
 Merge Studio is an all-in-one studio for Forge Neo that merges checkpoints, bakes multiple LoRAs, converts model precisions, inspects embedded recipes, and fixes quantized files.
 
-Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). If you try merging quantized checkpoints (FP8, INT8, ConvRot), standard mergers produce broken files or crash. Merge Studio solves this by dequantizing weights before computing merges, supporting modern architectures (SD1.5, SDXL, Pony, Illustrious, Flux, Anima, Wan2.1), and allowing you to bake up to 10 LoRAs and custom VAEs in a single pass.
+Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). If you try merging quantized checkpoints (FP8, INT8, ConvRot), standard mergers produce broken files or crash. Merge Studio solves this by dequantizing weights before computing merges, working with **whatever Forge Neo itself can load** through its standard checkpoint loader, and allowing you to bake up to 10 LoRAs and custom VAEs in a single pass.
 
 ---
 
@@ -39,7 +39,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 ## Why Merge Studio?
 
 - **Quantization-Aware**: Merges FP8, INT8, and ConvRot checkpoints accurately without tensor corruption.
-- **Built for Modern DiT & SD Models**: Full support for Anima, Wan2.1, Flux, SDXL, Pony, Illustrious, and SD1.5.
+- **Tracks Forge Neo, Not a Fixed List**: Compatibility is defined by Forge Neo's own loader, not by a hardcoded table here — Anima, Flux, Qwen-Image, Chroma, Z-Image, Lumina, Wan, SDXL (Pony / Illustrious) and SD1.5 all go through the same path. Architectures Forge Neo removed (**SD2** and **SD3**) are out of scope here as well.
 - **Save Disk Space**: Bake Turbo LoRAs or style LoRAs directly into models, or strip unneeded VAEs to save gigabytes of storage.
 - **Zero-RAM Recipe Inspector**: Check what components, base models, parent hashes, and LoRAs are inside any checkpoint in under 5 milliseconds.
 - **Self-Healing**: Diagnose and repair common header metadata errors in community quantized checkpoints with one click.
@@ -53,7 +53,9 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Weighted Sum (`A * (1 - M) + B * M`)**: Smoothly blend two checkpoints using an intuitive multiplier slider.
 - **Add Difference (`A + (B - C) * M`)**: Extract unique stylistic or architectural differences between models B and C, and inject them into base model A.
 - **No Interpolation (Format Converter)**: Convert or re-quantize a single checkpoint without merging. Switch between FP16, BF16, FP8 (e4m3fn / e5m2), and INT8.
-- **Instant Present-Only Badges & Architecture Detection**: Selecting Model A, B, or C immediately identifies model family (Anima, Illustrious, Pony, SDXL, Flux, Wan2.1, SD1.5) and **only displays the components actually present in the file** (`DiT/UNet`, `Text Encoder`, `VAE`, `LLM Adapter`), keeping the interface clean with zero false-alarm "Missing" clutter.
+- **Instant Present-Only Badges & Architecture Detection**: Selecting Model A, B, or C immediately names the model family from the file's own tensor keys (Anima, Illustrious, Pony, SDXL, Flux, Wan, SD1.5, with a generic `DiT / Diffusion Model` fallback for anything newer) and **only displays the components actually present in the file** (`DiT/UNet`, `Text Encoder`, `VAE`, `LLM Adapter`), keeping the interface clean with zero false-alarm "Missing" clutter.
+- **Cross-Generation Anima Merging**: Anima's generations were each built by *inserting* new transformer blocks between the previous generation's (28 → 40 → 52), so a plain name-for-name merge lines up unrelated layers and yields noise. Merge Studio detects the block-count difference and remaps indices automatically, using Forge's own mapping tables — the same ones the LoRA path uses at generation time. Blocks that the expansion created have no counterpart in the older model and are kept at Model A's weights; the panel reports exactly how many were merged and how many were preserved.
+- **Inserted-Block Blend (`extend_ratio`)**: The blocks a newer Anima generation inserted have no counterpart in the older model, so by default they keep Model A's weights. Raising `extend_ratio` also blends in the block each one was originally copied from. **Set this close to the Multiplier when you plan to use LoRAs built for the older generation** — Forge remaps such LoRAs onto the inserted blocks as well, so leaving those blocks unblended means a LoRA delta landing on weights it was never trained against. Experimental, and `0.0` is the right default otherwise.
 - **Cross-Model Compatibility Protection**: Automatically warns if Model B or C belongs to an incompatible architecture family relative to Model A (e.g. attempting to mix Anima with SDXL or Flux), preventing corrupted merges both visually in the UI and via safety validation before engine loading.
 - **Per-Component Precision**: Target different datatypes for diffusion models, text encoders, and VAEs independently.
 - **Adaptive ConvRot Quantization**: Automatically selects optimal group sizes (256, 128, 64) for channel-sensitive architectures like SDXL and Illustrious to prevent shape mismatch crashes.
@@ -61,7 +63,8 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 ### 2. Dynamic LoRA Baking (Up to 10 LoRAs)
 
 - **Dynamic Slots & Per-Row Removal**: Start with 1 slot and add more as needed with **Add LoRA** (up to 10 simultaneous LoRAs). Each row features its own dedicated red **X** button to delete that specific LoRA and automatically compact the list, plus a **Clear All LoRAs** button.
-- **Native Forge Engine**: Uses Forge's native LoRA application pipeline rather than external approximations, ensuring identical results to loading LoRAs at generation time.
+- **Native Forge Engine**: Uses Forge's native LoRA application pipeline (`networks.load_lora_for_models`) rather than external approximations, ensuring identical results to loading LoRAs at generation time — and, by the same token, supporting exactly the LoRA formats Forge Neo itself supports.
+- **Mismatched LoRAs Are Skipped, Not Forced**: If more than half of a LoRA's keys don't map onto the checkpoint, Forge declines to apply it and logs `LoRA mismatch` to the console. The bake still completes and writes a valid file — just without that LoRA — so check the console when a result looks unchanged.
 - **Preserved Trigger Words**: Activation text from LoRA metadata is automatically preserved in sidecar notes so you always know the required trigger words.
 - **Anima & DiT Smart Warnings**: Normalizes trigger words to lowercase spacing and warns if a LoRA contains LLM (Qwen3) adapter weights that could destabilize Anima checkpoints.
 
@@ -70,7 +73,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Original**: Keeps the VAE embedded in Model A.
 - **None (Strip VAE)**: Completely removes the VAE from the output file, significantly reducing file size. Ideal for workflows where VAEs are loaded separately in Forge.
 - **Custom VAE**: Pick any standalone VAE from your `models/VAE` folder and bake it directly into your merged checkpoint.
-- **VAE Precision Casting**: Save your baked VAE in FP16, BF16, or FP8 e4m3fn.
+- **VAE Precision Casting**: Save your baked VAE in any of the output formats (FP16, BF16, FP8 e4m3fn / e5m2, INT8, NVFP4, INT4), or leave it `Same as source checkpoint`. VAEs are the most quality-sensitive component to quantize, so FP16/BF16 is the safe default.
 
 ### 4. Model Recipe & Inspector
 
@@ -125,9 +128,66 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 ## Supported Models & Formats
 
-- **Supported Architectures**: SD1.5, SD2.1, SDXL, Pony, Illustrious, Flux, Anima, Wan2.1, SD3, and other standard Forge Neo diffusion architectures.
-- **Supported Precision Types**: FP16, BF16, FP8 (e4m3fn / e5m2), INT8 (tensor-wise, ConvRot channel-wise), NVFP4, and INT4.
-- **Not Supported**: GGUF, NF4, FP4 storage formats, and Nunchaku/SVDQuant files (these use incompatible tensor packing and are safely rejected with an informative error message).
+Merge Studio does not maintain its own compatibility list. It loads models through Forge Neo's standard checkpoint loader and operates on the resulting `MixedPrecisionOps` module tree, so **whatever Forge Neo can load, Merge Studio can open**. Whether a given operation is *useful* on that model is a separate question — the table below answers it per model. The authoritative list of what Forge Neo loads lives in the [Forge Neo README](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo#features-sep).
+
+### Architectures
+
+Two different questions hide behind "does it work here", and they have different answers:
+
+- **Convert / quantize / bake LoRA** needs **one** checkpoint. The merge engine walks `named_modules()` generically and the save path uses the same `process_*_state_dict_for_saving()` hooks Forge's own `save_checkpoint()` uses, so this is architecture-agnostic.
+- **Merge (Weighted Sum / Add Difference)** needs **two or three** checkpoints that share an architecture *and* a tensor shape. That is a much narrower condition, and for several Forge Neo models no second compatible checkpoint exists to merge with.
+
+| Model | Convert / Quantize / Bake | Merge A+B | Architecture badge |
+| :--- | :---: | :--- | :--- |
+| SD1.5 | Yes | Yes — huge checkpoint ecosystem | `SD 1.5 / SD 2.1 (UNet)` |
+| SDXL, Pony, Illustrious, Mugen | Yes | Yes — huge checkpoint ecosystem | `SDXL` / `Pony` / `Illustrious` |
+| Flux, Flux Kontext, Chroma1-HD | Yes | Yes — finetunes are widely available | `Flux (MMDiT)` |
+| Anima 2B / 2.9B / 3.8B | Yes | Yes, **including across generations** — 28 / 40 / 52 blocks are bridged automatically <sup>†‡</sup> | `Anima (DiT)` |
+
+The block remapping was verified against 213 real Anima checkpoints: every one resolved to exactly 28, 40, or 52 blocks, across all three on-disk key prefixes in circulation (`model.diffusion_model.blocks.`, `net.blocks.`, and a bare `blocks.`). Every generation pair matched with **identical tensor shapes and zero mismatches** (52→40: 800 modules; 52→28: 560; 40→28: 560), with every inserted block resolving to the source it was copied from.
+
+The mapping was then confirmed numerically against the official base checkpoints. Comparing `Anima-3.8B` (52 blocks) to `Anima-2.9B` (40 blocks) block-by-block, the best-matching source block agrees with the mapping for **all 52 targets**, with cosine similarity of **exactly 1.0000 on carried-over blocks** — they are bit-identical, confirming the frozen-stem design — and ~0.97 on inserted blocks against the block each was copied from, versus a 0.52 mean runner-up.
+| Wan 2.2 (14B) | Yes | Only 14B with 14B (e.g. High Noise / Low Noise) | `Wan2.1 (DiT)` <sup>1</sup> |
+| Z-Image, Krea 2, Ernie-Image | Yes | Plausible but untested — the only pairing is base + turbo | Misreported <sup>2</sup> |
+| Lumina-Image-2.0 | Yes | Plausible but untested — Neta-Lumina / NetaYume-Lumina | Misreported <sup>2</sup> |
+| Qwen-Image / Qwen-Image-Edit | Yes | Untested | Misreported <sup>2</sup> |
+| Flux.2-Klein | Yes | **No practical pairing** — 4B and 9B are different sizes | Generic `DiT / Diffusion Model` |
+| PiD 1.5 | Yes | **No** — the `sdxl` / `qwen` / `flux1` / `flux2` variants are four different transformers, and PiD is a refiner rather than a base model | Generic `DiT / Diffusion Model` |
+
+> [!Note]
+> The rows above were derived by reading Forge Neo's `model_list.py`, `loader.py`, and this extension's merge path — **not** by bench-testing every model. Rows marked *untested* are the ones where nothing in the code forbids the merge but no one has confirmed a good result. Treat "Yes" in the merge column as "the mechanics hold and compatible checkpoints exist", not as a quality guarantee.
+
+<sup>†</sup> Merging a 28-block model into a 40- or 52-block one is supported, and the larger model must be **Primary Model (A)**. Putting the newer generation in B or C is caught twice: the badge flags it the moment you pick the model, and the merge refuses before loading any engine — collapsing a larger model onto a smaller one has no defined mapping. The inserted blocks are reported as preserved rather than as a skipped-layer warning, and `extend_ratio` optionally blends them.
+
+<sup>1</sup> Not a typo. Forge Neo's own config class for Wan 2.2 14B is `WAN21_T2V` with `image_model: "wan2.1"` — the badge mirrors upstream naming.
+
+<sup>‡</sup> Nested block stacks are excluded structurally, not by name. Anima checkpoints carry sub-modules with their own indexed stacks — `llm_adapter.blocks.<N>` in every generation, and `anima_v2_connector.semantic_resampler.blocks.<N>` in 3.8B v1.1's bundled Semantic Connector v2 — which a loose `.blocks.<N>.` search would happily rewrite. Only blocks at the DiT root are remapped, so a component upstream adds or renames later cannot silently start matching.
+
+<sup>2</sup> The badge reports `Anima (DiT)` for these. Anima, Z-Image, Qwen-Image, and Krea 2 all bundle a Qwen-family text encoder under `text_encoders.`, and the detector treats any `qwen` key — or any `net.` prefix, which Lumina-style DiTs use — as an Anima signal. This affects the **label and the A-vs-B family guard only**; the merge math is untouched. UNet-only files (text encoder loaded as a separate module, the common case for these models) fall back to the generic label instead.
+
+> [!Warning]
+> The cross-model guard only blocks a mismatched Model B or C when it recognizes **both** families; an unrecognized or misreported family disables the check rather than guessing. For every DiT model below the Flux row, **you are responsible for picking a compatible B / C**. A genuine mismatch still degrades safely — mismatched layers are counted and reported as skipped rather than silently corrupting the output.
+
+> [!Warning]
+> **Anima-3.8B: match the text encoder the checkpoint was built for.** Some 52-block checkpoints are built against the native `qwen_3_06b` encoder and explicitly not against Qwen3.5-4B or the expanded adapter, because their inserted blocks were trained for that conditioning. Merge Studio loads whatever you have in **Additional Modules**, so the wrong encoder there gives you a misleading result — and in **Full Checkpoint** mode it gets baked into the output. Block remapping itself is unaffected: it never touches `llm_adapter` or the `semantic_attentions` / semantic-connector keys that Anima-3.8B v1.1+ may bundle into the DiT file.
+
+> [!Important]
+> **A UNet-only checkpoint still needs its text encoder and VAE reachable.** Forge builds the engine before Merge Studio touches anything, and engines like Z-Image, Krea 2, Qwen-Image, and Anima require `text_encoder`, `vae`, and `transformer` components to even construct — a missing one aborts with `You do not have {component} state dict!`. Merge Studio passes your configured **Settings → Additional Modules** through to the loader, so point those at the model's text encoder and VAE first. This applies **even when saving in UNet Only mode**, where neither component ends up in the output file.
+
+> [!Important]
+> **SD2 and SD3 are removed features in Forge Neo** and therefore cannot be merged here. The header inspector may still *label* an SD3 / SD3.5 (MMDiT) or SD2.1 file, because it reads `.safetensors` headers directly without the engine — but any merge, conversion, or LoRA bake will fail at load time, since Forge Neo has no loader for them.
+
+### Precision & Quantization
+
+- **Output formats**: FP16, BF16, FP8 (e4m3fn / e5m2), INT8 (tensor-wise single scale, or ConvRot per-channel + Hadamard rotation), NVFP4, and INT4 (ConvRot W4A4) — selectable independently for the diffusion model, text encoder, and VAE.
+- **Readable inputs**: any plain FP16/BF16 checkpoint, plus Forge Neo's MixedPrecision family (`fp8_scaled`, `mxfp8`, `nvfp4`, `int8_convrot`, `convrot_w4a4`, and friends).
+
+### Not Supported
+
+- **Nunchaku / SVDQuant** — deprecated upstream and stores weights outside `MixedPrecisionOps`.
+- **GGUF, NF4, FP4 storage** — different tensor packing; note that Forge Neo also dropped `bitsandbytes` support, which is what provided NF4/FP4 in the first place.
+
+All of these are detected before any work starts and rejected with an explicit error instead of silently producing a broken file.
 
 ---
 
@@ -147,6 +207,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 ## Credits & License
 
 - Built for **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** by Haoming02.
+- Anima cross-generation block mapping follows Forge Neo's own `process_anima` tables. The approach — and the independent `expand_manifest` reconstruction that corroborates them — comes from **[ComfyUI-Anima-Remap](https://github.com/shin131002/ComfyUI-Anima-Remap)** by shin131002 (MIT).
 - Adheres to standard Forge & WebUI merge conventions.
 - Released under the [MIT License](LICENSE).
 

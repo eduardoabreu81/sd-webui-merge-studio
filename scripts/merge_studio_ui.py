@@ -403,6 +403,7 @@ def merge_handler(
     tertiary_name: str,
     interp_label: str,
     multiplier: float,
+    anima_extend_ratio: float = 0.0,
     save_mode_label: str = SAVE_MODE_CHOICES[0][0],
     device_label: str = DEVICE_CHOICES[0][0],
     output_filename: str = "",
@@ -475,6 +476,7 @@ def merge_handler(
             loras=selected_loras if selected_loras else None,
             device_choice=device_choice,
             bake_vae=bake_vae,
+            anima_extend_ratio=float(anima_extend_ratio or 0.0),
             progress_cb=progress_cb,
         )
 
@@ -484,12 +486,25 @@ def merge_handler(
         size_str = _format_size(result["output"])
         loras_desc = ", ".join(f"{a['name']} ({a['strength']})" for a in result.get("loras", [])) if result.get("loras") else ""
         baked_vae_desc = f"<b>Baked VAE:</b> <code>{result['baked_vae']}</code><br>" if result.get("baked_vae") else ""
+        remap = result.get("anima_remap")
+        remap_desc = (
+            f"<b>Anima remap:</b> {remap['from_blocks']}-block &rarr; {remap['to_blocks']}-block "
+            f"({remap['frozen_blocks']} shared blocks merged, {remap['inserted_blocks']} inserted blocks "
+            + (
+                f"blended at extend_ratio {remap['extend_ratio']})<br>"
+                if remap.get("extend_ratio")
+                else "kept from A)<br>"
+            )
+            if remap
+            else ""
+        )
         html = (
             f"<div style='margin-top: 10px; line-height: 1.6; font-size: 14px;'>"
             f"<b>Checkpoint saved to:</b> <code>{result['output']}</code><br>"
             f"<b>File size:</b> <span style='color: #10b981; font-weight: bold;'>{size_str}</span><br>"
             f"<b>Format:</b> <code>{result['output_format']}</code> (Mode: <code>{save_mode}</code>)<br>"
             f"<b>Merged layers:</b> UNet: {result['merged']['unet']}, CLIP: {result['merged']['clip']}, VAE: {result['merged']['vae']}<br>"
+            + remap_desc
             + baked_vae_desc
             + (f"<b>Baked LoRAs:</b> {loras_desc}<br>" if loras_desc else "")
             + f"</div>"
@@ -499,7 +514,14 @@ def merge_handler(
             gr.Warning(f"LoRA(s) with LLM adapter weights baked in: {', '.join(llm_adapter_hits)}. Anima's own training guidance says never to train these alongside a LoRA.", duration=10)
             html += f"<div style='color:orange; margin-top: 6px;'>Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
         if skipped_total:
-            html += f"<div style='color:orange; margin-top: 6px;'>Warning: {skipped_total} layer(s) skipped (missing or incompatible between models).</div>"
+            if remap and not remap.get("extend_ratio"):
+                html += (
+                    f"<div style='color:#6b7280; margin-top: 6px;'>{skipped_total} layer(s) kept from Model A "
+                    f"(the {remap['inserted_blocks']} blocks Anima's expansion inserted have no counterpart in a "
+                    f"{remap['from_blocks']}-block model). This is expected.</div>"
+                )
+            else:
+                html += f"<div style='color:orange; margin-top: 6px;'>Warning: {skipped_total} layer(s) skipped (missing or incompatible between models).</div>"
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
     except checkpoint_merge.MergeError as e:
         gr.Warning(str(e), duration=8)
@@ -624,6 +646,22 @@ def create_merge_studio_tab():
                         info=INTERP_DESCRIPTIONS[checkpoint_merge.INTERP_WEIGHTED_SUM],
                     )
                     merge_multiplier = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.05, label="Multiplier (M)")
+
+                anima_extend_ratio = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.0,
+                    step=0.05,
+                    label="Anima cross-generation: inserted-block blend (extend_ratio)",
+                    info=(
+                        "Only applies when merging two different Anima generations (28 / 40 / 52 blocks). "
+                        "The newer generation's extra blocks have no counterpart in the older model, so at 0.0 they keep "
+                        "Model A's weights. Above 0.0 they also blend in the block they were originally copied from. "
+                        "If you plan to use LoRAs built for the OLDER generation, match this to the Multiplier: Forge remaps "
+                        "such LoRAs onto the inserted blocks too, so an unblended base leaves those blocks reacting to a "
+                        "LoRA trained against weights they don't have. Experimental — the inserted blocks diverged in training."
+                    ),
+                )
 
                 with gr.Accordion("Bake LoRA(s) into Checkpoint (Optional)", open=False):
                     gr.Markdown("Optionally apply one or multiple LoRAs (e.g. Turbo LoRA, Style LoRAs) directly into the checkpoint weights.")
@@ -792,6 +830,7 @@ def create_merge_studio_tab():
                         merge_tertiary,
                         merge_interp,
                         merge_multiplier,
+                        anima_extend_ratio,
                         merge_save_mode,
                         merge_device,
                         merge_output_name,
@@ -868,6 +907,7 @@ def create_merge_studio_tab():
             merge_tertiary,
             merge_interp,
             merge_multiplier,
+            anima_extend_ratio,
             merge_save_mode,
             merge_device,
             merge_output_name,
