@@ -23,8 +23,8 @@ found in community int8 checkpoints.
 
 - [Features](#features)
   - [Checkpoint Merge & Studio](#checkpoint-merge--studio)
-  - [Model Recipe & Inspector](#model-recipe--inspector)
   - [Quant Format Doctor](#quant-format-doctor)
+  - [Model Recipe & Inspector](#model-recipe--inspector)
 - [Which Models Work Here](#which-models-work-here)
 - [Installation](#installation)
 - [Credits](#credits)
@@ -74,20 +74,6 @@ found in community int8 checkpoints.
   source model hashes) matching the native Checkpoint Merger's provenance convention, or
   preview the source models' existing metadata before merging
 
-### Model Recipe & Inspector
-- **Instant Header Inspection**: parses `.safetensors` metadata in < 5ms with zero VRAM or RAM
-  allocation
-- **Component Status**: verifies whether the checkpoint contains a Diffusion Model (UNet/DiT),
-  Text Encoders (CLIP, T5), VAE, or LLM adapters
-- **Architecture & Precision**: identifies the model family (SD1.5, SDXL, Flux, Anima, Wan2.1,
-  SD3, etc.) and primary tensor datatypes
-- **Merge Provenance & Lineage**: reads embedded `sd_merge_recipe` metadata to display parent
-  models, SHA-256 parent hashes, merge methods, interpolation ratios, and nested merge history
-- **Baked LoRA Detection**: lists any LoRAs baked into the checkpoint along with bake strengths
-  and activation tags
-- **Raw Metadata Explorer**: interactive formatted view of all header metadata keys (e.g.
-  ComfyUI workflows, quantization configurations, training configs)
-
 ### Quant Format Doctor
 - Diagnoses and repairs `.safetensors` checkpoints whose `comfy_quant` metadata is missing the
   required `format` field — the cause of `ValueError: Unknown quantization format for layer
@@ -96,6 +82,21 @@ found in community int8 checkpoints.
   from each layer's dtype and auxiliary keys
 - Fix in place or save a repaired copy; aborts safely instead of guessing when a layer's format
   can't be inferred
+
+### Model Recipe & Inspector
+- **Instant Header Inspection**: parses `.safetensors` metadata in < 5ms with zero VRAM or RAM
+  allocation
+- **Component Status**: verifies whether the checkpoint contains a Diffusion Model (UNet/DiT),
+  Text Encoders (CLIP, T5), VAE, or LLM adapters
+- **Architecture & Precision**: identifies the model family (SD1.5, SDXL, Flux, Anima, Wan2.1,
+  SD3, etc.) and primary tensor datatypes
+- **Merge Provenance & Lineage**: reads embedded `sd_merge_recipe` (Forge/A1111) and mechanically
+  parses ComfyUI node graphs (`prompt` / `workflow`) to display base models (with SHA-256 hashes),
+  merge methods, interpolation ratios, and nested merge history
+- **Baked LoRA Detection**: lists any LoRAs baked into the checkpoint along with bake strengths,
+  SHA-256 parent hashes, and activation tags across both WebUI merge recipes and ComfyUI pipelines
+- **Raw Metadata Explorer**: interactive formatted view of all header metadata keys (e.g.
+  ComfyUI workflows, quantization configurations, training configs)
 
 ---
 

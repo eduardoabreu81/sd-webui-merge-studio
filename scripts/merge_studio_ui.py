@@ -690,27 +690,6 @@ def create_merge_studio_tab():
                     show_progress=False,
                 )
 
-            with gr.Tab("Model Recipe & Inspector"):
-                gr.Markdown(
-                    "Inspect any checkpoint's internal components (UNet/DiT, Text Encoder, VAE), architecture, precision, "
-                    "and full merge recipe provenance without loading weights into RAM/VRAM."
-                )
-                with gr.Row():
-                    inspector_checkpoint = gr.Dropdown(label="Checkpoint", choices=sorted(sd_models.checkpoint_tiles()))
-                    create_refresh_button(
-                        [inspector_checkpoint],
-                        sd_models.list_models,
-                        lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
-                        "merge_studio_refresh_inspector",
-                    )
-                inspector_btn = gr.Button("Inspect Checkpoint", variant="primary")
-                inspector_html = gr.HTML(
-                    "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect its components and merge recipe.</div>"
-                )
-
-                inspector_btn.click(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
-                inspector_checkpoint.change(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
-
             with gr.Tab("Quant Format Doctor"):
                 gr.Markdown(
                     "Some quantized checkpoints (e.g. community INT8 builds) have a metadata bug that causes "
@@ -739,6 +718,27 @@ def create_merge_studio_tab():
                     outputs=[doctor_checkpoint, doctor_fix_html],
                     show_progress=False,
                 )
+
+            with gr.Tab("Model Recipe & Inspector"):
+                gr.Markdown(
+                    "Inspect any checkpoint's internal components (UNet/DiT, Text Encoder, VAE), architecture, precision, "
+                    "and full merge recipe provenance without loading weights into RAM/VRAM."
+                )
+                with gr.Row():
+                    inspector_checkpoint = gr.Dropdown(label="Checkpoint", choices=sorted(sd_models.checkpoint_tiles()))
+                    create_refresh_button(
+                        [inspector_checkpoint],
+                        sd_models.list_models,
+                        lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
+                        "merge_studio_refresh_inspector",
+                    )
+                inspector_btn = gr.Button("Inspect Checkpoint", variant="primary")
+                inspector_html = gr.HTML(
+                    "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect its components and merge recipe.</div>"
+                )
+
+                inspector_btn.click(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
+                inspector_checkpoint.change(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
 
         for comp in (
             doctor_checkpoint,

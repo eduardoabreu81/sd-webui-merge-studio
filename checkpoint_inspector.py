@@ -95,6 +95,126 @@ def _detect_precision(header: dict[str, Any]) -> str:
     return "/".join(sorted(dtypes)) if dtypes else "Unknown"
 
 
+def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    prompt_raw = metadata.get("prompt")
+    wf_raw = metadata.get("workflow")
+    if not prompt_raw and not wf_raw:
+        return None
+
+    prompt = {}
+    if prompt_raw:
+        try:
+            prompt = json.loads(prompt_raw) if isinstance(prompt_raw, str) else prompt_raw
+        except Exception:
+            pass
+
+    wf = {}
+    if wf_raw:
+        try:
+            wf = json.loads(wf_raw) if isinstance(wf_raw, str) else wf_raw
+        except Exception:
+            pass
+
+    hashes = {}
+    if isinstance(wf, dict):
+        extra = wf.get("extra", {})
+        if isinstance(extra, dict):
+            hashes = extra.get("anomalous_hashes", {})
+
+    base_models = []
+    loras = []
+    merges = []
+    encoders = []
+    vaes = []
+
+    if isinstance(prompt, dict):
+        for nid, node in prompt.items():
+            if not isinstance(node, dict):
+                continue
+            ctype = node.get("class_type", "")
+            inp = node.get("inputs", {})
+
+            if ctype in ("UNETLoader", "CheckpointLoaderSimple", "CheckpointLoader", "DiffusersLoader"):
+                m_name = inp.get("unet_name") or inp.get("ckpt_name") or inp.get("model_path")
+                if m_name:
+                    h = ""
+                    for k, v in hashes.items():
+                        if m_name in k and isinstance(v, dict):
+                            h = v.get("hash", "")
+                            break
+                    base_models.append({"name": m_name, "node": ctype, "hash": h})
+
+            elif ctype in ("CLIPLoader", "DualCLIPLoader"):
+                c_name = inp.get("clip_name") or inp.get("clip_name1")
+                if c_name:
+                    encoders.append(c_name)
+
+            elif ctype == "VAELoader":
+                v_name = inp.get("vae_name")
+                if v_name:
+                    vaes.append(v_name)
+
+            elif ctype in ("LoraLoaderModelOnly", "LoraLoader", "LoraLoaderBlockWeight"):
+                l_name = inp.get("lora_name")
+                l_str = inp.get("strength_model", inp.get("strength", 1.0))
+                if l_name:
+                    h = ""
+                    for k, v in hashes.items():
+                        if l_name in k and isinstance(v, dict):
+                            h = v.get("hash", "")
+                            break
+                    loras.append({"name": l_name, "strength": l_str, "hash": h})
+
+            elif "ModelMerge" in ctype:
+                ratio = inp.get("ratio", "N/A")
+                merges.append({"type": ctype, "ratio": ratio})
+
+        if not loras:
+            for nid, node in prompt.items():
+                if not isinstance(node, dict):
+                    continue
+                ctype = node.get("class_type", "")
+                inp = node.get("inputs", {})
+                if "Power Lora" in ctype or "PowerLora" in ctype or "CR LoRA Stack" in ctype:
+                    for k, v in inp.items():
+                        if isinstance(v, dict) and v.get("on", True) and v.get("lora"):
+                            l_name = v.get("lora")
+                            l_str = v.get("strength", 1.0)
+                            h = ""
+                            for hk, hv in hashes.items():
+                                if l_name in hk and isinstance(hv, dict):
+                                    h = hv.get("hash", "")
+                                    break
+                            loras.append({"name": l_name, "strength": l_str, "hash": h})
+
+    unique_loras = []
+    seen = set()
+    for l in loras:
+        key = (l["name"], l["strength"])
+        if key not in seen:
+            seen.add(key)
+            unique_loras.append(l)
+
+    unique_base = []
+    seen_base = set()
+    for b in base_models:
+        if b["name"] not in seen_base:
+            seen_base.add(b["name"])
+            unique_base.append(b)
+
+    if not unique_base and not unique_loras and not merges:
+        return None
+
+    return {
+        "source": "ComfyUI Workflow",
+        "base_models": unique_base,
+        "loras": unique_loras,
+        "merges": merges,
+        "encoders": list(dict.fromkeys(encoders)),
+        "vaes": list(dict.fromkeys(vaes)),
+    }
+
+
 def inspect_checkpoint(filepath: str) -> dict[str, Any]:
     """Inspects a checkpoint's .safetensors header and returns structured metadata."""
     if not os.path.exists(filepath):
@@ -178,6 +298,8 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         except Exception:
             models = {"raw": str(raw_m)}
 
+    comfy_recipe = _parse_comfy_recipe(metadata)
+
     file_size = os.path.getsize(filepath)
     gb = file_size / (1024 ** 3)
     mb = file_size / (1024 ** 2)
@@ -198,6 +320,7 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
             "llm_adapter": has_llm_adapter,
         },
         "recipe": recipe,
+        "comfy_recipe": comfy_recipe,
         "models": models,
         "raw_metadata": metadata,
     }
@@ -357,12 +480,100 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"</div>"
         )
     else:
-        recipe_html = (
-            f"<div style='margin-top: 20px; padding: 14px 16px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); color: #9ca3af; font-size: 13px; line-height: 1.5;'>"
-            f"<b>No merge recipe recorded in header.</b><br>"
-            f"This checkpoint does not contain 'sd_merge_recipe' metadata tags. This is typical for checkpoints trained from scratch, exported without metadata, or pruned by external cleaning tools."
+        recipe_html = ""
+
+    # ComfyUI recipe section HTML
+    comfy_recipe = info.get("comfy_recipe")
+    comfy_html = ""
+    if comfy_recipe:
+        c_models = comfy_recipe.get("base_models", [])
+        c_loras = comfy_recipe.get("loras", [])
+        c_merges = comfy_recipe.get("merges", [])
+        c_encoders = comfy_recipe.get("encoders", [])
+        c_vaes = comfy_recipe.get("vaes", [])
+
+        # Cards for base models
+        b_cards = ""
+        for bm in c_models:
+            b_name = bm.get("name", "Unknown")
+            b_hash = bm.get("hash", "")
+            b_node = bm.get("node", "Loader")
+            hash_snippet = f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {b_hash}</div>" if b_hash else ""
+            b_cards += (
+                f"<div style='padding: 10px 14px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;'>"
+                f"<div style='font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; margin-bottom: 2px;'>Base Model ({b_node})</div>"
+                f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{b_name}</div>"
+                f"{hash_snippet}"
+                f"</div>"
+            )
+
+        # Merge cards if any
+        m_cards = ""
+        for mg in c_merges:
+            m_type = mg.get("type", "ModelMerge")
+            m_ratio = mg.get("ratio", "N/A")
+            m_cards += (
+                f"<div style='margin-bottom: 8px; font-size: 13px; color: #d1d5db;'>"
+                f"<b>ComfyUI Merge Node:</b> <code style='color: #38bdf8;'>{m_type} (Ratio: {m_ratio})</code>"
+                f"</div>"
+            )
+
+        # LoRA rows
+        c_loras_html = ""
+        if c_loras:
+            lora_rows = ""
+            for l in c_loras:
+                l_name = l.get("name", "")
+                l_str = l.get("strength", 1.0)
+                l_h = l.get("hash", "")
+                h_badge = f"<span style='font-size: 10px; color: #6b7280; font-family: monospace;'> [{l_h[:12]}...]</span>" if l_h else ""
+                lora_rows += (
+                    f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px;'>"
+                    f"<span><b>{l_name}</b>{h_badge}</span>"
+                    f"<span style='color: #10b981; font-family: monospace; font-weight: 600;'>strength: {l_str}</span>"
+                    f"</div>"
+                )
+            c_loras_html = (
+                f"<div style='margin-top: 14px;'>"
+                f"<div style='font-size: 12px; font-weight: 600; text-transform: uppercase; color: #9ca3af; margin-bottom: 6px;'>Baked LoRAs ({len(c_loras)})</div>"
+                f"<div style='border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); padding: 4px;'>{lora_rows}</div>"
+                f"</div>"
+            )
+
+        # Extra info (encoders / vaes)
+        extra_info = ""
+        if c_encoders or c_vaes:
+            extra_bits = []
+            if c_encoders:
+                extra_bits.append(f"<b>Text Encoder:</b> <code>{', '.join(c_encoders)}</code>")
+            if c_vaes:
+                extra_bits.append(f"<b>VAE:</b> <code>{', '.join(c_vaes)}</code>")
+            extra_info = f"<div style='margin-top: 10px; font-size: 12px; color: #9ca3af;'>{' &nbsp;•&nbsp; '.join(extra_bits)}</div>"
+
+        comfy_html = (
+            f"<div style='margin-top: 20px; padding: 16px; border-radius: 8px; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25);'>"
+            f"<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;'>"
+            f"<div style='font-size: 16px; font-weight: bold; color: #38bdf8;'>ComfyUI Workflow Recipe Detected</div>"
+            f"<span style='font-size: 12px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; padding: 3px 8px; border-radius: 4px;'>Source: ComfyUI Node Graph</span>"
+            f"</div>"
+            f"{m_cards}"
+            f"<div style='margin-top: 10px;'>{b_cards}</div>"
+            f"{c_loras_html}"
+            f"{extra_info}"
             f"</div>"
         )
+
+    if not recipe and not comfy_recipe:
+        empty_recipe_html = (
+            f"<div style='margin-top: 20px; padding: 14px 16px; border-radius: 8px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.08); color: #9ca3af; font-size: 13px; line-height: 1.5;'>"
+            f"<b>No merge recipe or workflow recorded in header.</b><br>"
+            f"This checkpoint does not contain 'sd_merge_recipe' or ComfyUI workflow metadata. This is typical for checkpoints trained from scratch, exported without metadata, or pruned by external cleaning tools."
+            f"</div>"
+        )
+    else:
+        empty_recipe_html = ""
+
+    all_recipes_html = recipe_html + comfy_html + empty_recipe_html
 
     # Extra metadata table / JSON accordion
     meta_json_str = json.dumps(raw_meta, indent=2, ensure_ascii=False) if raw_meta else "{}"
@@ -390,7 +601,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"</div>"
         f"</div>"
         # Recipe Section
-        f"{recipe_html}"
+        f"{all_recipes_html}"
         # Metadata Accordion
         f"<details style='margin-top: 16px; padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06);'>"
         f"<summary style='cursor: pointer; font-size: 13px; font-weight: 600; color: #9ca3af;'>View Raw Metadata (JSON - {len(raw_meta)} fields)</summary>"
