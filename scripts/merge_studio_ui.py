@@ -14,6 +14,7 @@ _EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _EXT_ROOT not in sys.path:
     sys.path.insert(0, _EXT_ROOT)
 
+import aux_inspector  # noqa: E402
 import checkpoint_merge  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
@@ -79,13 +80,78 @@ def tertiary_badge_handler(p_name: str, t_name: str):
     return format_badges_html(t_info, compatible_with_info=p_info) if t_info else ""
 
 
-def run_inspection_handler(name: str) -> str:
-    if not name:
-        return "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect.</div>"
+INSPECT_KINDS = ("Checkpoint", "LoRA", "Text Encoder / VAE")
+
+
+def _module_choices() -> list[str]:
+    """Text encoders and VAEs, from the same list Forge offers as Additional
+    Modules -- so what can be inspected here matches what can actually be
+    loaded alongside a checkpoint."""
     try:
-        path = _checkpoint_path(name)
-        info = inspect_checkpoint(path)
-        return format_recipe_dashboard_html(info)
+        from modules_forge import main_entry
+
+        if not getattr(main_entry, "module_list", None):
+            main_entry.refresh_models()
+        return sorted(main_entry.module_list.keys())
+    except Exception:
+        try:
+            return sorted(available_vaes().keys())
+        except Exception:
+            return []
+
+
+def _inspect_choices(kind: str) -> list[str]:
+    if kind == "LoRA":
+        try:
+            return sorted(lora_bake.available_loras().keys())
+        except Exception:
+            return []
+    if kind == "Text Encoder / VAE":
+        return _module_choices()
+    return sorted(sd_models.checkpoint_tiles())
+
+
+def _inspect_path(kind: str, name: str) -> str:
+    if kind == "LoRA":
+        path = lora_bake.available_loras().get(name)
+        if not path:
+            raise ValueError(f"LoRA not found: {name}")
+        return path
+    if kind == "Text Encoder / VAE":
+        path = None
+        try:
+            from modules_forge import main_entry
+
+            path = (main_entry.module_list or {}).get(name)
+        except Exception:
+            pass
+        path = path or available_vaes().get(name)
+        if not path:
+            raise ValueError(f"Module not found: {name}")
+        return path
+    return _checkpoint_path(name)
+
+
+def inspect_kind_changed(kind: str):
+    """Swaps the dropdown over to the chosen model type and clears the panel,
+    so a stale card from the previous type can't be mistaken for the new one."""
+    return (
+        gr.update(label=kind, choices=_inspect_choices(kind), value=None),
+        gr.update(value=f"Inspect {kind}"),
+        f"<div style='padding: 20px; color: #9ca3af;'>Select a {kind.lower()} above to inspect it.</div>",
+    )
+
+
+def run_inspection_handler(name: str, kind: str = "Checkpoint") -> str:
+    if not name:
+        return f"<div style='padding: 20px; color: #9ca3af;'>Select a {kind.lower()} above to inspect it.</div>"
+    try:
+        path = _inspect_path(kind, name)
+        if kind == "LoRA":
+            return aux_inspector.format_lora_dashboard_html(aux_inspector.inspect_lora(path))
+        if kind == "Text Encoder / VAE":
+            return aux_inspector.format_module_dashboard_html(aux_inspector.inspect_module(path))
+        return format_recipe_dashboard_html(inspect_checkpoint(path))
     except Exception as e:
         return _err_html(e)
 
@@ -1083,24 +1149,55 @@ def create_merge_studio_tab():
 
             with gr.Tab("Model Recipe & Inspector"):
                 gr.Markdown(
-                    "Inspect any checkpoint's internal components (UNet/DiT, Text Encoder, VAE), architecture, precision, "
-                    "and full merge recipe provenance without loading weights into RAM/VRAM."
+                    "Inspect any model Forge can load, without reading weights into RAM/VRAM. "
+                    "**Checkpoints:** components (UNet/DiT, Text Encoder, VAE), architecture, precision, and merge recipe provenance. "
+                    "**LoRAs:** trigger word, which Anima generation it targets, rank, coverage, and whether it changes the LLM adapter. "
+                    "**Text encoders / VAEs:** which one it actually is, so a checkpoint isn't paired with the wrong encoder."
+                )
+                inspector_kind = gr.Radio(
+                    choices=list(INSPECT_KINDS),
+                    value=INSPECT_KINDS[0],
+                    label="Model type",
                 )
                 with gr.Row():
                     inspector_checkpoint = gr.Dropdown(label="Checkpoint", choices=sorted(sd_models.checkpoint_tiles()))
+
+                    def refresh_inspector_choices():
+                        sd_models.list_models()
+                        try:
+                            from modules_forge import main_entry
+
+                            main_entry.refresh_models()
+                        except Exception:
+                            pass
+
                     create_refresh_button(
                         [inspector_checkpoint],
-                        sd_models.list_models,
-                        lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
+                        refresh_inspector_choices,
+                        lambda: {"choices": _inspect_choices(inspector_kind.value)},
                         "merge_studio_refresh_inspector",
                     )
                 inspector_btn = gr.Button("Inspect Checkpoint", variant="primary")
                 inspector_html = gr.HTML(
-                    "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect its components and merge recipe.</div>"
+                    "<div style='padding: 20px; color: #9ca3af;'>Select a checkpoint above to inspect it.</div>"
                 )
 
-                inspector_btn.click(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
-                inspector_checkpoint.change(fn=run_inspection_handler, inputs=[inspector_checkpoint], outputs=[inspector_html])
+                inspector_kind.change(
+                    fn=inspect_kind_changed,
+                    inputs=[inspector_kind],
+                    outputs=[inspector_checkpoint, inspector_btn, inspector_html],
+                    queue=False,
+                )
+                inspector_btn.click(
+                    fn=run_inspection_handler,
+                    inputs=[inspector_checkpoint, inspector_kind],
+                    outputs=[inspector_html],
+                )
+                inspector_checkpoint.change(
+                    fn=run_inspection_handler,
+                    inputs=[inspector_checkpoint, inspector_kind],
+                    outputs=[inspector_html],
+                )
 
         for comp in (
             doctor_checkpoint,

@@ -84,6 +84,8 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 ### 5. Model Recipe & Inspector
 
+Inspects **any** model Forge loads, not just checkpoints — pick the type and the dropdown follows.
+
 - **Instant Header Analysis**: Reads `.safetensors` headers in <5ms with zero VRAM or RAM overhead.
 - **Component Status**: Clearly identifies whether a checkpoint contains a UNet/DiT, CLIP/T5/Qwen text encoder, VAE, or LLM adapters (only showing embedded components).
 - **Turbo & Anima Turbo 1.1 Detection**: Mechanically identifies whether a checkpoint contains a baked Turbo LoRA, was merged from an Anima Turbo 1.1 base model, or includes Turbo workflow nodes, highlighting lineage and bake strengths in a dedicated callout card.
@@ -93,6 +95,16 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
   - Displays original base models, parent SHA-256 hashes, merge methods, and ratios.
 - **Baked LoRA Discovery**: Lists any LoRAs previously baked into the checkpoint, along with bake weights and activation tags.
 - **Raw Metadata Viewer**: Interactive expandable viewer for all raw metadata keys.
+
+**LoRA inspection** answers what you actually need before baking one:
+
+- **Trigger Word, Up Front**: Shows the activation text you must still type in the prompt — baking a LoRA never removes that need — or states plainly that none is required, which is the normal case for acceleration LoRAs.
+- **Which Generation It Targets**: Reads the Anima generation (28 / 40 / 52 blocks) the same way Forge decides it at load time, and notes that Forge will remap it upward automatically.
+- **Rank and Coverage**: Uniform rank or per-layer adaptive, how many of its generation's blocks it touches, and which parts of each block (self-attention, cross-attention, MLP, modulation).
+- **LLM Adapter, by Magnitude**: Distinguishes a LoRA that genuinely trained Anima's LLM adapter from one that merely carries empty factors for it — which is what an SVD extraction produces for layers whose delta was zero. Only the former is flagged.
+- **Trained or Extracted**: Recognises a LoRA produced by subtracting two checkpoints and shows how it was taken.
+
+**Text encoder / VAE inspection** identifies the file by its actual layer shape rather than its filename, so you can confirm a checkpoint is paired with the encoder it was built for before merging — in Full Checkpoint mode the encoder loaded at merge time is the one baked into the output.
 
 ### 6. Quant Format Doctor
 
