@@ -120,8 +120,18 @@ def _build_metadata(
                 "extend_ratio": anima_remap.get("extend_ratio", 0.0),
             }
         if loras:
+            # activation_text travels inside the checkpoint, not just in the
+            # sidecar .json: baking a LoRA does not remove the need to type its
+            # trigger word, and a sidecar is easily lost when the file is moved
+            # or shared. The Inspector reads this field back.
             merge_recipe["baked_loras"] = [
-                {"name": a["name"], "strength": a["strength"], "llm_adapter_warning": a["llm_adapter_warning"]}
+                {
+                    "name": a["name"],
+                    "strength": a["strength"],
+                    "activation_text": a.get("activation_text", ""),
+                    "activation_text_raw": a.get("activation_text_raw", ""),
+                    "llm_adapter_warning": a["llm_adapter_warning"],
+                }
                 for a in loras
             ]
         sd_merge_models: dict = {}
