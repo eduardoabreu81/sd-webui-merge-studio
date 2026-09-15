@@ -19,7 +19,7 @@ from backend.loader import forge_loader
 from modules import extra_networks, shared
 
 from checkpoint_inspector import load_custom_vae_state_dict
-from quant_utils import PLAIN_FORMATS, convert_module_tree_precision, debug_print, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from quant_utils import PLAIN_FORMATS, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, debug_print, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
 
 
 class BakeError(RuntimeError):
@@ -347,10 +347,11 @@ def bake_lora_into_checkpoint(
             # but on disk it is part of Anima's DiT (model.diffusion_model.llm_adapter.*).
             # We must include it even in unet_only mode!
             clip_sd = utils.get_state_dict_after_quant(clip.cond_stage_model)
+            dit_dtype = _dominant_float_dtype(sd)
             for k, v in clip_sd.items():
                 if "llm_adapter" in k:
                     suffix = k[k.index("llm_adapter") :]
-                    sd[f"model.diffusion_model.{suffix}"] = v
+                    sd[f"model.diffusion_model.{suffix}"] = _match_dtype(v, dit_dtype)
 
         if is_custom_vae:
             if progress_cb:

@@ -51,7 +51,13 @@ QUANT_FORMAT_VARIANTS: dict[str, tuple[str, dict]] = {
 # (label, output_format key) pairs shared by every UI tab that offers an
 # output-format choice.
 OUTPUT_FORMAT_CHOICES = [
-    ("Same as source checkpoint", "same"),
+    # Not "same as the file on disk": this path writes each module back in the
+    # precision Forge loaded it in, which for a plain checkpoint is whatever
+    # Settings -> UNET storage dtype resolved to. A BF16 source loaded as FP16
+    # is therefore saved as FP16. It does round-trip a quantized checkpoint's
+    # own format exactly, which is the case it exists for. Pick an explicit
+    # format above to override.
+    ("Same as loaded (Forge's storage dtype)", "same"),
     ("FP16 (no quantization)", "fp16"),
     ("BF16 (no quantization)", "bf16"),
     ("FP8 (e4m3fn)", "float8_e4m3fn"),
@@ -71,6 +77,36 @@ DEFAULT_SKIP_SUBSTRINGS = ("norm", "embed", "modulation")
 
 class QuantConversionError(RuntimeError):
     pass
+
+
+def _dominant_float_dtype(state_dict: dict) -> "torch.dtype | None":
+    """The floating dtype most of a state dict uses.
+
+    Used to keep components that are assembled from different parts of the
+    engine in one precision. Anima's llm_adapter is the case that motivated
+    this: Forge moves it into the text encoder at load time, so copying it
+    back out carries the encoder's dtype rather than the DiT's, which is
+    where it actually lives on disk.
+    """
+    counts: dict = {}
+    for v in state_dict.values():
+        dt = getattr(v, "dtype", None)
+        if dt is not None and getattr(dt, "is_floating_point", False):
+            counts[dt] = counts.get(dt, 0) + 1
+    return max(counts, key=counts.get) if counts else None
+
+
+def _match_dtype(tensor, dtype):
+    """Casts a floating tensor to dtype, leaving anything else untouched so a
+    quantized or integer payload is never silently reinterpreted."""
+    if dtype is None or not hasattr(tensor, "dtype"):
+        return tensor
+    if not getattr(tensor.dtype, "is_floating_point", False) or tensor.dtype == dtype:
+        return tensor
+    try:
+        return tensor.to(dtype)
+    except Exception:
+        return tensor
 
 
 def is_quantized(module: nn.Module) -> bool:
