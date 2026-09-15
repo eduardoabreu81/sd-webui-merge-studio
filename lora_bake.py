@@ -70,15 +70,63 @@ def _normalize_activation_text(activation_text: str, engine) -> str:
     return activation_text.replace("_", " ").lower()
 
 
+# An llm_adapter block whose weights are this small relative to the LoRA's
+# main blocks carries no real change. LoRAs extracted by SVD from a pair of
+# checkpoints emit a factor pair for every module they scan, including ones
+# whose delta was zero, so "has llm_adapter keys" on its own says nothing.
+# Measured spread on real Anima turbo LoRAs: an SVD extraction of a zero
+# delta sits ~700x below its own main blocks, while a LoRA that genuinely
+# trained the adapter sits at roughly 1x. 1% separates the two with room
+# to spare.
+_LLM_ADAPTER_SIGNIFICANCE = 0.01
+
+_LORA_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", "diff")
+
+
 def _lora_touches_llm_adapter(lora_sd: dict) -> bool:
-    """Anima's own training guidance says to never train the LLM (Qwen3)
-    adapter alongside a LoRA. A LoRA that still carries llm_adapter weights
-    (e.g. trained incorrectly, or with a script that doesn't follow that
-    guidance) could degrade the baked checkpoint's text understanding, so we
-    flag it instead of silently applying it. Matches both key conventions
-    used by extensions-builtin/sd_forge_lora/networks.py::process_anima
+    """Whether a LoRA meaningfully changes the LLM (Qwen3) adapter.
+
+    Anima's own training guidance says never to train that adapter alongside
+    a LoRA, and baking one that does permanently alters the checkpoint's text
+    understanding -- so we flag it rather than applying it silently.
+
+    Presence of llm_adapter keys is not enough to conclude that, though: an
+    SVD-extracted LoRA writes a factor pair for every module it scanned, so
+    modules whose delta was zero still show up, carrying only numerical
+    noise. Comparing magnitude against the LoRA's own main blocks tells the
+    two apart. Matches both key conventions handled by
+    extensions-builtin/sd_forge_lora/networks.py::process_anima
     ("diffusion_model.llm_adapter" and "lora_unet_llm_adapter")."""
-    return any("llm_adapter" in k for k in lora_sd)
+    llm_sq = llm_n = main_sq = main_n = 0.0
+    for k, v in lora_sd.items():
+        if not any(m in k for m in _LORA_FACTOR_MARKERS):
+            continue
+        try:
+            t = v.float()
+            sq = float(t.pow(2).sum())
+            n = t.numel()
+        except Exception:
+            continue
+        if not n:
+            continue
+        if "llm_adapter" in k:
+            llm_sq += sq
+            llm_n += n
+        else:
+            main_sq += sq
+            main_n += n
+
+    if not llm_n:
+        return False
+    if not main_n:
+        # Nothing to compare against: an adapter-only LoRA is worth flagging.
+        return True
+
+    llm_rms = (llm_sq / llm_n) ** 0.5
+    main_rms = (main_sq / main_n) ** 0.5
+    if main_rms == 0.0:
+        return llm_rms > 0.0
+    return (llm_rms / main_rms) > _LLM_ADAPTER_SIGNIFICANCE
 
 
 def _write_checkpoint_notes(output_path: str, notes: str) -> None:

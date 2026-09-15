@@ -209,6 +209,7 @@ All of these are detected before any work starts and rejected with an explicit e
 - Built for **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** by Haoming02.
 - Anima cross-generation block mapping follows Forge Neo's own `process_anima` tables. The approach — and the independent `expand_manifest` reconstruction that corroborates them — comes from **[ComfyUI-Anima-Remap](https://github.com/shin131002/ComfyUI-Anima-Remap)** by shin131002 (MIT).
 - Adheres to standard Forge & WebUI merge conventions.
+- Measurements behind these decisions, and a deferred proposal for difference extraction, are recorded in [docs/RESEARCH.md](docs/RESEARCH.md).
 - Released under the [MIT License](LICENSE).
 
 <div align="center">
