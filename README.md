@@ -99,7 +99,8 @@ Inspects **any** model Forge loads, not just checkpoints. One dropdown lists the
 **LoRA inspection** answers what you actually need before baking one:
 
 - **Trigger Word, Up Front**: Shows the activation text you must still type in the prompt — baking a LoRA never removes that need — or states plainly that none is required, which is the normal case for acceleration LoRAs.
-- **Which Generation It Targets**: Reads the Anima generation (28 / 40 / 52 blocks) the same way Forge decides it at load time, and notes that Forge will remap it upward automatically.
+- **Which Generation It Targets**: Reads the Anima generation (28 / 40 / 52 blocks) the same way Forge decides it at load time, and notes that Forge will remap it upward automatically. A LoRA built for another architecture is named as such (SD1.x / SDXL UNet, Flux, SD3) rather than reported as broken — a misfiled LoRA looks identical to a damaged one otherwise.
+- **LyCORIS as Well as LoRA**: Recognises LoHa, LoKr, OFT/BOFT and DoRA, which Forge applies through the same weight-adapter path and which therefore bake exactly like a plain LoRA.
 - **Rank and Coverage**: Uniform rank or per-layer adaptive, how many of its generation's blocks it touches, and which parts of each block (self-attention, cross-attention, MLP, modulation).
 - **LLM Adapter, by Magnitude**: Distinguishes a LoRA that genuinely trained Anima's LLM adapter from one that merely carries empty factors for it — which is what an SVD extraction produces for layers whose delta was zero. Only the former is flagged.
 - **Trained or Extracted**: Recognises a LoRA produced by subtracting two checkpoints and shows how it was taken.

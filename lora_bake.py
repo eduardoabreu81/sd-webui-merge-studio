@@ -80,10 +80,16 @@ def _normalize_activation_text(activation_text: str, engine) -> str:
 # to spare.
 _LLM_ADAPTER_SIGNIFICANCE = 0.01
 
-# Dots kept on the diff-style markers: a bare "diff" is a substring of
-# "model.diffusion_model.", so it would match every key in the LoRA and
-# pull scalars like alpha into the magnitude comparison.
-_LORA_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", ".diff.", ".diff_b")
+# Covers the LyCORIS family as well as plain LoRA, since Forge applies them
+# all through the same weight-adapter path and any of them can carry
+# llm_adapter weights. Dots kept on the diff-style markers: a bare "diff" is
+# a substring of "model.diffusion_model.", so it would match every key in the
+# LoRA and pull scalars like alpha into the magnitude comparison.
+_LORA_FACTOR_MARKERS = (
+    "lora_down", "lora_up", "lora_A", "lora_B",
+    "hada_w", "lokr_w", "oft_blocks", "oft_diag", "dora_scale",
+    ".diff.", ".diff_b",
+)
 
 
 def _lora_touches_llm_adapter(lora_sd: dict) -> bool:

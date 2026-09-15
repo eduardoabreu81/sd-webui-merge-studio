@@ -35,12 +35,35 @@ _LORA_PREFIXES = (
     ("diffusion_model.blocks.", "."),
 )
 
-# Tensors that carry a LoRA's actual magnitude. `alpha` is a scalar and
+# Tensors that carry an adapter's actual magnitude. `alpha` is a scalar and
 # `.weight` alone would also catch bias/norm copies, so match the factors.
+#
+# Covers the LyCORIS family too, not just plain LoRA: Forge applies all of
+# them through the same weight-adapter path, so a LoHa or LoKr bakes exactly
+# like a LoRA and has to be recognised the same way.
+#
 # The diff-style markers keep their surrounding dots: a bare "diff" is a
 # substring of "model.diffusion_model.", which would match every key of an
 # ordinary checkpoint.
-_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", ".diff.", ".diff_b")
+_FACTOR_MARKERS = (
+    "lora_down", "lora_up", "lora_A", "lora_B",   # LoRA
+    "hada_w",                                      # LoHa
+    "lokr_w",                                      # LoKr
+    "oft_blocks", "oft_diag",                      # OFT / BOFT
+    "dora_scale",                                  # DoRA, layered on the above
+    ".diff.", ".diff_b",                           # plain difference patches
+)
+
+# (marker, name) in priority order -- the first hit names the algorithm.
+_ALGORITHMS = (
+    ("hada_w", "LoHa (LyCORIS, Hadamard product)"),
+    ("lokr_w", "LoKr (LyCORIS, Kronecker product)"),
+    ("oft_blocks", "OFT (orthogonal fine-tuning)"),
+    ("oft_diag", "BOFT (butterfly orthogonal)"),
+    ("lora_down", "LoRA"),
+    ("lora_A", "LoRA"),
+    (".diff.", "Plain difference patch"),
+)
 
 _TARGET_GROUPS = ("self_attn", "cross_attn", "mlp", "adaln")
 
@@ -91,14 +114,49 @@ def _lora_block_info(keys: list[str]) -> dict[str, Any]:
     }
 
 
+# A LoRA with no Anima block keys is not broken -- it targets a different
+# architecture. Naming which one is more use than calling it unrecognised,
+# since a misfiled LoRA is otherwise hard to tell from a damaged one.
+_FOREIGN_LAYOUTS = (
+    (("input_blocks", "output_blocks", "middle_block"), "SD1.x / SDXL UNet"),
+    (("double_blocks", "single_blocks"), "Flux"),
+    (("joint_blocks",), "SD3"),
+    (("transformer_blocks",), "DiT (transformer_blocks layout)"),
+)
+
+
+def _foreign_layout(keys: list[str]) -> str | None:
+    joined = "\n".join(keys[:2000])
+    for markers, name in _FOREIGN_LAYOUTS:
+        if any(m in joined for m in markers):
+            return name
+    return None
+
+
+def _lora_algorithm(keys: list[str]) -> str:
+    """Which adapter algorithm the file uses. DoRA is a modifier rather than a
+    format of its own, so it is appended to whatever it sits on top of."""
+    joined = "\n".join(keys)
+    name = next((n for marker, n in _ALGORITHMS if marker in joined), "Unrecognised adapter format")
+    if "dora_scale" in joined:
+        name += " + DoRA"
+    return name
+
+
+# Where the rank lives, per algorithm. LoKr's effective rank is a property of
+# its factorisation rather than one tensor dimension, so it is read from the
+# trainer's own metadata instead of guessed from a shape.
+_RANK_TENSORS = ("lora_down", "lora_A", "hada_w1_b", "lokr_w2_b")
+
+
 def _lora_ranks(header: dict[str, Any]) -> dict[int, int]:
-    """{rank: how many modules use it}. A single entry means a uniform-rank
-    LoRA; several means the rank was chosen per layer."""
+    """{rank: how many modules use it}. A single entry means a uniform rank;
+    several means it was chosen per layer."""
     ranks: dict[int, int] = {}
     for k, v in header.items():
         if k == "__metadata__" or not isinstance(v, dict):
             continue
-        if "lora_down" in k or "lora_A" in k:
+        if any(t in k for t in _RANK_TENSORS):
             shape = v.get("shape") or []
             if shape:
                 ranks[shape[0]] = ranks.get(shape[0], 0) + 1
@@ -264,7 +322,9 @@ def inspect_lora(filepath: str) -> dict[str, Any]:
         "size_str": _human_size(size),
         "total_tensors": len(keys),
         "precision": _detect_precision(header),
+        "algorithm": _lora_algorithm(keys),
         "generation": blocks["generation"],
+        "foreign_layout": None if blocks["generation"] else _foreign_layout(keys),
         "max_block": blocks["max_block"],
         "blocks_touched": len(blocks["indices"]),
         "covers_all_blocks": (
@@ -275,6 +335,7 @@ def inspect_lora(filepath: str) -> dict[str, Any]:
         ),
         "ranks": ranks,
         "uniform_rank": (next(iter(ranks)) if len(ranks) == 1 else None),
+        "declared_dim": metadata.get("ss_network_dim", ""),
         "targets": targets,
         "llm_adapter_tensors": len(llm_keys),
         "llm_adapter_ratio": ratio,
@@ -518,7 +579,13 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
         return _err_card(info["error"])
 
     gen = info.get("generation")
-    badges = _badge(f"Anima {gen}-block", _BLUE) if gen else _badge("Unrecognised block layout", _GREY)
+    foreign = info.get("foreign_layout")
+    if gen:
+        badges = _badge(f"Anima {gen}-block", _BLUE)
+    elif foreign:
+        badges = _badge(f"Not Anima — {foreign}", _AMBER)
+    else:
+        badges = _badge("Unrecognised block layout", _GREY)
     badges += " " + _badge(info.get("precision", "?"), _GREY)
     if info.get("is_turbo"):
         badges += " " + _badge("Turbo", _AMBER)
@@ -530,6 +597,8 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
         rank_str = f"{info['uniform_rank']} (uniform)"
     elif ranks:
         rank_str = f"adaptive, {min(ranks)}&ndash;{max(ranks)} across {sum(ranks.values())} modules"
+    elif info.get("declared_dim"):
+        rank_str = f"{info['declared_dim']} <span style='color:{_GREY};'>(declared by the trainer)</span>"
     else:
         rank_str = "&mdash;"
 
@@ -547,7 +616,14 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
     else:
         coverage = "&mdash;"
 
-    body = _row("Targets Anima generation", f"{gen}-block" if gen else "unrecognised")
+    if gen:
+        arch_row = f"Anima, {gen}-block"
+    elif foreign:
+        arch_row = f"<span style='color:{_AMBER};'>{foreign}</span> &mdash; not an Anima LoRA"
+    else:
+        arch_row = "unrecognised"
+    body = _row("Adapter format", info.get("algorithm", "&mdash;"))
+    body += _row("Architecture", arch_row)
     body += _row("Blocks covered", coverage)
     body += _row("Rank", rank_str)
     body += _row("Modules touched", target_str)

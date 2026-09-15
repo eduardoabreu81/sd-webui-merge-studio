@@ -135,6 +135,15 @@ def _detect_precision(header: dict[str, Any]) -> str:
     return "/".join(sorted(dtypes)) if dtypes else "Unknown"
 
 
+def _model_name(value: Any) -> str | None:
+    """A ComfyUI node input is either a literal or a link to another node,
+    and a link is serialised as [node_id, output_index]. Only a literal names
+    a model, so anything else is dropped -- otherwise a wired-up input reaches
+    the dedup step as an unhashable list and takes the whole inspection down.
+    """
+    return value if isinstance(value, str) and value else None
+
+
 def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
     prompt_raw = metadata.get("prompt")
     wf_raw = metadata.get("workflow")
@@ -175,7 +184,7 @@ def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
             inp = node.get("inputs", {})
 
             if ctype in ("UNETLoader", "CheckpointLoaderSimple", "CheckpointLoader", "DiffusersLoader"):
-                m_name = inp.get("unet_name") or inp.get("ckpt_name") or inp.get("model_path")
+                m_name = _model_name(inp.get("unet_name") or inp.get("ckpt_name") or inp.get("model_path"))
                 if m_name:
                     h = ""
                     for k, v in hashes.items():
@@ -185,17 +194,17 @@ def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
                     base_models.append({"name": m_name, "node": ctype, "hash": h})
 
             elif ctype in ("CLIPLoader", "DualCLIPLoader"):
-                c_name = inp.get("clip_name") or inp.get("clip_name1")
+                c_name = _model_name(inp.get("clip_name") or inp.get("clip_name1"))
                 if c_name:
                     encoders.append(c_name)
 
             elif ctype == "VAELoader":
-                v_name = inp.get("vae_name")
+                v_name = _model_name(inp.get("vae_name"))
                 if v_name:
                     vaes.append(v_name)
 
             elif ctype in ("LoraLoaderModelOnly", "LoraLoader", "LoraLoaderBlockWeight"):
-                l_name = inp.get("lora_name")
+                l_name = _model_name(inp.get("lora_name"))
                 l_str = inp.get("strength_model", inp.get("strength", 1.0))
                 if l_name:
                     h = ""
@@ -218,7 +227,7 @@ def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
                 if "Power Lora" in ctype or "PowerLora" in ctype or "CR LoRA Stack" in ctype:
                     for k, v in inp.items():
                         if isinstance(v, dict) and v.get("on", True) and v.get("lora"):
-                            l_name = v.get("lora")
+                            l_name = _model_name(v.get("lora"))
                             l_str = v.get("strength", 1.0)
                             h = ""
                             for hk, hv in hashes.items():

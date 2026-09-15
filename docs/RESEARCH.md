@@ -165,6 +165,31 @@ difference that already exists between two checkpoints.
 
 ---
 
+## Library sweep (validation)
+
+Running every inspection path over the whole local library, as a check that the
+detection rules hold outside hand-picked examples:
+
+| | files | result |
+| :--- | ---: | :--- |
+| Type detection from header | 633 | 633 correct |
+| `inspect_lora` + render | 402 | 0 crashes, 0 header errors, ~15 s |
+| `inspect_checkpoint` + render | 220 | 0 crashes after the fix below |
+
+What the sweep turned up that hand-picked samples had not:
+
+- Two LoRAs in the library are **LyCORIS**, not plain LoRA — one LoHa+DoRA, one
+  LoKr. Both use the `lora_unet_blocks_<N>_` convention and bake through Forge's
+  weight-adapter path like any LoRA, but were invisible to markers that only knew
+  `lora_down` / `lora_A`.
+- One LoRA filed under Anima targets **SDXL**, which is why an unrecognised block
+  layout is now named rather than just flagged.
+- Two checkpoints crashed `inspect_checkpoint` with `TypeError: unhashable type:
+  'list'`. A ComfyUI node input is either a literal or a link to another node, and
+  a link serialises as `[node_id, output_index]`; a wired-up `ckpt_name` or
+  `lora_name` reached the dedup step as a list. Both files now inspect cleanly and
+  recover turbo detection that the crash had been swallowing.
+
 ## Method notes
 
 - **HTTP Range beats downloading.** Civitai's signed URLs and HuggingFace
