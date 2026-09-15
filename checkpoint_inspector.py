@@ -341,10 +341,18 @@ def format_badges_html(info: dict[str, Any]) -> str:
         if comps.get("unet")
         else f'<span style="color: #ef4444; font-weight: bold;">{model_type}: Missing</span>'
     )
+    # Dynamic text encoder label
+    if "Anima" in arch:
+        te_label = "Text Encoder (Qwen)"
+    elif "Flux" in arch or "SD3" in arch:
+        te_label = "Text Encoder (T5/CLIP)"
+    else:
+        te_label = "CLIP"
+
     clip_badge = (
-        '<span style="color: #10b981; font-weight: bold;">CLIP: Present</span>'
+        f'<span style="color: #10b981; font-weight: bold;">{te_label}: Present</span>'
         if comps.get("clip")
-        else '<span style="color: #f59e0b; font-weight: bold;">CLIP: Missing</span>'
+        else f'<span style="color: #f59e0b; font-weight: bold;">{te_label}: Missing</span>'
     )
     vae_badge = (
         '<span style="color: #10b981; font-weight: bold;">VAE: Present</span>'
@@ -402,7 +410,15 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     is_dit = any(w in arch for w in ("DiT", "Flux", "SD3", "Wan", "Anima"))
     model_name = "Diffusion Transformer (DiT)" if is_dit else "Diffusion Model (UNet)"
     unet_note = "DiT denoising network" if (comps.get("unet") and is_dit) else ("UNet denoising network" if comps.get("unet") else "No diffusion model detected")
-    clip_note = "Embedded text encoder" if comps.get("clip") else "Requires external text encoder"
+    if "Anima" in arch:
+        te_pill_label = "Text Encoder (Qwen 3)"
+        clip_note = "Embedded Qwen 3 text encoder" if comps.get("clip") else "Requires external Qwen text encoder"
+    elif "Flux" in arch or "SD3" in arch:
+        te_pill_label = "Text Encoder (T5/CLIP)"
+        clip_note = "Embedded T5/CLIP text encoder" if comps.get("clip") else "Requires external text encoder"
+    else:
+        te_pill_label = "Text Encoder (CLIP)"
+        clip_note = "Embedded CLIP text encoder" if comps.get("clip") else "Requires external text encoder"
     vae_note = "Embedded autoencoder" if comps.get("vae") else "Requires external VAE"
 
     llm_pill = ""
@@ -595,7 +611,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         # Component Grid
         f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 14px;'>"
         f"{_comp_pill(model_name, comps.get('unet'), unet_note)}"
-        f"{_comp_pill('Text Encoder (CLIP/T5)', comps.get('clip'), clip_note)}"
+        f"{_comp_pill(te_pill_label, comps.get('clip'), clip_note)}"
         f"{_comp_pill('VAE (Autoencoder)', comps.get('vae'), vae_note)}"
         f"{llm_pill}"
         f"</div>"
