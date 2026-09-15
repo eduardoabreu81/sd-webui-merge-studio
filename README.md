@@ -21,10 +21,11 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - [Why Merge Studio?](#why-merge-studio)
 - [Key Features](#key-features)
   - [1. Checkpoint Merge & Conversion](#1-checkpoint-merge--conversion)
-  - [2. Dynamic LoRA Baking (Up to 10 LoRAs)](#2-dynamic-lora-baking-up-to-10-loras)
-  - [3. Custom VAE Baking and Stripping](#3-custom-vae-baking-and-stripping)
-  - [4. Model Recipe & Inspector](#4-model-recipe--inspector)
-  - [5. Quant Format Doctor](#5-quant-format-doctor)
+  - [2. Save / Load Recipes](#2-save--load-recipes)
+  - [3. Dynamic LoRA Baking (Up to 10 LoRAs)](#3-dynamic-lora-baking-up-to-10-loras)
+  - [4. Custom VAE Baking and Stripping](#4-custom-vae-baking-and-stripping)
+  - [5. Model Recipe & Inspector](#5-model-recipe--inspector)
+  - [6. Quant Format Doctor](#6-quant-format-doctor)
 - [Quick Start Guides](#quick-start-guides)
   - [How to Merge Checkpoints](#how-to-merge-checkpoints)
   - [How to Bake LoRAs into a Checkpoint](#how-to-bake-loras-into-a-checkpoint)
@@ -60,7 +61,13 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Per-Component Precision**: Target different datatypes for diffusion models, text encoders, and VAEs independently.
 - **Adaptive ConvRot Quantization**: Automatically selects optimal group sizes (256, 128, 64) for channel-sensitive architectures like SDXL and Illustrious to prevent shape mismatch crashes.
 
-### 2. Dynamic LoRA Baking (Up to 10 LoRAs)
+### 2. Save / Load Recipes
+
+- **Repeatable Bakes**: Store every setting on the merge tab — models, method, multiplier, `extend_ratio`, precisions per component, save mode, VAE choice, metadata options, and the full LoRA list with strengths — as a single JSON file, then reload it to repeat or tweak a bake.
+- **Survives Reinstalls**: Recipes are written under the WebUI's data directory when Forge exposes one, so updating or reinstalling the extension doesn't lose them.
+- **Portable, and Honest About Gaps**: A recipe from another machine still loads. Fields naming a model or LoRA you don't have are left untouched rather than cleared, and the panel names exactly which ones were missing.
+
+### 3. Dynamic LoRA Baking (Up to 10 LoRAs)
 
 - **Dynamic Slots & Per-Row Removal**: Start with 1 slot and add more as needed with **Add LoRA** (up to 10 simultaneous LoRAs). Each row features its own dedicated red **X** button to delete that specific LoRA and automatically compact the list, plus a **Clear All LoRAs** button.
 - **Native Forge Engine**: Uses Forge's native LoRA application pipeline (`networks.load_lora_for_models`) rather than external approximations, ensuring identical results to loading LoRAs at generation time — and, by the same token, supporting exactly the LoRA formats Forge Neo itself supports.
@@ -68,14 +75,14 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Preserved Trigger Words**: Activation text from LoRA metadata is automatically preserved in sidecar notes so you always know the required trigger words.
 - **Anima & DiT Smart Warnings**: Normalizes trigger words to lowercase spacing and warns if a LoRA contains LLM (Qwen3) adapter weights that could destabilize Anima checkpoints.
 
-### 3. Custom VAE Baking and Stripping
+### 4. Custom VAE Baking and Stripping
 
 - **Original**: Keeps the VAE embedded in Model A.
 - **None (Strip VAE)**: Completely removes the VAE from the output file, significantly reducing file size. Ideal for workflows where VAEs are loaded separately in Forge.
 - **Custom VAE**: Pick any standalone VAE from your `models/VAE` folder and bake it directly into your merged checkpoint.
 - **VAE Precision Casting**: Save your baked VAE in any of the output formats (FP16, BF16, FP8 e4m3fn / e5m2, INT8, NVFP4, INT4), or leave it `Same as source checkpoint`. VAEs are the most quality-sensitive component to quantize, so FP16/BF16 is the safe default.
 
-### 4. Model Recipe & Inspector
+### 5. Model Recipe & Inspector
 
 - **Instant Header Analysis**: Reads `.safetensors` headers in <5ms with zero VRAM or RAM overhead.
 - **Component Status**: Clearly identifies whether a checkpoint contains a UNet/DiT, CLIP/T5/Qwen text encoder, VAE, or LLM adapters (only showing embedded components).
@@ -87,7 +94,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Baked LoRA Discovery**: Lists any LoRAs previously baked into the checkpoint, along with bake weights and activation tags.
 - **Raw Metadata Viewer**: Interactive expandable viewer for all raw metadata keys.
 
-### 5. Quant Format Doctor
+### 6. Quant Format Doctor
 
 - **One-Click Diagnostic**: Checks whether a quantized checkpoint suffers from missing `format` metadata keys that cause `ValueError: Unknown quantization format for layer ...` during loading.
 - **Fast Header Stream**: Analyzes file headers without loading large tensors.

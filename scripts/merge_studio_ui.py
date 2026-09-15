@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import sys
@@ -376,6 +377,163 @@ INTERP_DESCRIPTIONS = {
 }
 
 
+# --- Merge recipes (save / load the whole tab as JSON) -------------------
+
+RECIPE_VERSION = 1
+MAX_LORAS = 10
+
+# Field order is the contract between save and load. Adding a field at the end
+# stays backwards compatible: load() falls back to the component's current
+# value for anything a older recipe doesn't carry.
+RECIPE_FIELDS = (
+    "primary", "secondary", "tertiary",
+    "interp", "multiplier", "anima_extend_ratio",
+    "save_mode", "device", "output_name", "discard",
+    "format", "clip_format", "vae_format",
+    "save_metadata", "config_source", "add_merge_recipe", "bake_vae",
+)
+
+
+_MODEL_SLOT_LABELS = {"primary": "Model A", "secondary": "Model B", "tertiary": "Model C"}
+
+
+def _recipes_dir() -> str:
+    """Recipes live under the WebUI data dir when Forge exposes one, so they
+    survive reinstalling the extension; otherwise next to the extension."""
+    base = getattr(getattr(shared, "cmd_opts", None), "data_dir", None)
+    root = os.path.join(base, "merge_studio_recipes") if base else os.path.join(_EXT_ROOT, "recipes")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+def _recipe_path(name: str) -> str:
+    stem = os.path.basename(str(name or "").strip())
+    if stem.lower().endswith(".json"):
+        stem = stem[:-5]
+    if not stem:
+        raise ValueError("Give the recipe a name.")
+    return os.path.join(_recipes_dir(), stem + ".json")
+
+
+def list_recipes() -> list[str]:
+    try:
+        return sorted(f[:-5] for f in os.listdir(_recipes_dir()) if f.endswith(".json"))
+    except Exception:
+        return []
+
+
+def save_recipe_handler(recipe_name: str, *values):
+    """values: RECIPE_FIELDS in order, then MAX_LORAS dropdowns, then
+    MAX_LORAS strengths, then the visible-row count."""
+    try:
+        scalars = values[: len(RECIPE_FIELDS)]
+        rest = values[len(RECIPE_FIELDS):]
+        dds, strengths, lora_count = rest[:MAX_LORAS], rest[MAX_LORAS:2 * MAX_LORAS], rest[2 * MAX_LORAS]
+
+        recipe = {
+            "_meta": {
+                "extension": "sd-webui-merge-studio",
+                "recipe_version": RECIPE_VERSION,
+                "saved_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            },
+            "settings": dict(zip(RECIPE_FIELDS, scalars)),
+            "loras": [
+                {"name": dd, "strength": float(st)}
+                for dd, st in zip(dds, strengths)
+                if dd and dd != NONE_LABEL
+            ],
+            "lora_slots": int(lora_count or 1),
+        }
+        path = _recipe_path(recipe_name)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(recipe, f, indent=2, ensure_ascii=False)
+
+        gr.Info(f"Recipe saved: {os.path.basename(path)}", duration=4)
+        return (
+            gr.update(choices=list_recipes(), value=os.path.basename(path)[:-5]),
+            f"<div style='margin-top:6px;font-size:12px;color:#10b981;'>Saved to <code>{path}</code></div>",
+        )
+    except Exception as e:
+        gr.Warning(str(e), duration=8)
+        return gr.update(), _err_html(e)
+
+
+def load_recipe_handler(recipe_name: str):
+    """Returns updates for every merge-tab control, in the same order the
+    outputs list is wired. Values naming a model or LoRA that isn't installed
+    here are left alone and reported, so a recipe from another machine still
+    restores everything else."""
+    blank = (
+        [gr.update() for _ in RECIPE_FIELDS]
+        + [gr.update() for _ in range(2 * MAX_LORAS)]
+        + [gr.update()]
+        + [gr.update() for _ in range(MAX_LORAS)]
+        + [gr.update(), gr.update()]
+    )
+    try:
+        with open(_recipe_path(recipe_name), "r", encoding="utf-8") as f:
+            recipe = json.load(f)
+        settings = recipe.get("settings", {}) or {}
+        loras = recipe.get("loras", []) or []
+
+        checkpoints = set(sd_models.checkpoint_tiles())
+        lora_names = set(_lora_choices())
+        vae_names = set(_vae_choices())
+        missing = []
+
+        def pick(key, valid=None, label=None):
+            if key not in settings:
+                return gr.update()
+            val = settings[key]
+            if valid is not None and val and val not in valid:
+                missing.append(f"{label or key}: {val}")
+                return gr.update()
+            return gr.update(value=val)
+
+        scalar_updates = []
+        for field in RECIPE_FIELDS:
+            if field in _MODEL_SLOT_LABELS:
+                scalar_updates.append(pick(field, checkpoints, _MODEL_SLOT_LABELS[field]))
+            elif field == "bake_vae":
+                scalar_updates.append(pick(field, vae_names, "Bake VAE"))
+            else:
+                scalar_updates.append(pick(field))
+
+        dd_updates = [gr.update(value=NONE_LABEL) for _ in range(MAX_LORAS)]
+        st_updates = [gr.update(value=1.0) for _ in range(MAX_LORAS)]
+        for i, entry in enumerate(loras[:MAX_LORAS]):
+            name = entry.get("name")
+            if name and name not in lora_names:
+                missing.append(f"LoRA: {name}")
+                continue
+            dd_updates[i] = gr.update(value=name)
+            st_updates[i] = gr.update(value=float(entry.get("strength", 1.0)))
+
+        slots = max(1, min(MAX_LORAS, int(recipe.get("lora_slots", 1) or 1), max(len(loras), 1)))
+        row_updates = [gr.update(visible=(i < slots)) for i in range(MAX_LORAS)]
+
+        method = INTERP_LABEL_TO_KEY.get(settings.get("interp"), settings.get("interp"))
+        has_b = method != checkpoint_merge.INTERP_NO_INTERPOLATION
+        has_c = method == checkpoint_merge.INTERP_ADD_DIFFERENCE
+
+        if missing:
+            gr.Warning("Not found on this install, left unchanged: " + "; ".join(missing), duration=10)
+            note = (
+                "<div style='margin-top:6px;font-size:12px;color:#f59e0b;'>Loaded, but not found here: "
+                + "; ".join(missing)
+                + "</div>"
+            )
+        else:
+            gr.Info(f"Recipe loaded: {recipe_name}", duration=4)
+            saved_at = (recipe.get("_meta") or {}).get("saved_at", "")
+            note = f"<div style='margin-top:6px;font-size:12px;color:#10b981;'>Loaded <code>{recipe_name}</code>{' &middot; saved ' + saved_at if saved_at else ''}</div>"
+
+        return scalar_updates + dd_updates + st_updates + [slots] + row_updates + [gr.update(visible=has_b), gr.update(visible=has_c)] + [note]
+    except Exception as e:
+        gr.Warning(str(e), duration=8)
+        return blank + [_err_html(e)]
+
+
 def merge_update_method(value: str):
     method = INTERP_LABEL_TO_KEY.get(value, value)
     has_b = method != checkpoint_merge.INTERP_NO_INTERPOLATION
@@ -665,7 +823,6 @@ def create_merge_studio_tab():
 
                 with gr.Accordion("Bake LoRA(s) into Checkpoint (Optional)", open=False):
                     gr.Markdown("Optionally apply one or multiple LoRAs (e.g. Turbo LoRA, Style LoRAs) directly into the checkpoint weights.")
-                    MAX_LORAS = 10
                     merge_lora_rows = []
                     merge_lora_row_layouts = []
                     merge_lora_del_btns = []
@@ -812,6 +969,53 @@ def create_merge_studio_tab():
                     fn=merge_update_method,
                     inputs=[merge_interp],
                     outputs=[merge_multiplier, secondary_col, tertiary_col, merge_interp, merge_config_source],
+                    show_progress=False,
+                    queue=False,
+                )
+
+                with gr.Accordion("Save / Load Recipe", open=False):
+                    gr.Markdown(
+                        "Store every setting on this tab as a JSON file so a bake can be repeated or tweaked later. "
+                        "Loading a recipe that names a model or LoRA you don't have leaves that field untouched and tells you which."
+                    )
+                    with gr.Row():
+                        recipe_dropdown = gr.Dropdown(label="Saved recipes", choices=list_recipes(), value=None, scale=3)
+                        create_refresh_button([recipe_dropdown], lambda: None, lambda: {"choices": list_recipes()}, "merge_studio_recipe_refresh")
+                        recipe_load_btn = gr.Button("Load", variant="secondary", scale=1)
+                    with gr.Row():
+                        recipe_name = gr.Textbox(label="Save as", placeholder="e.g. anima-turbo-bake", scale=3)
+                        recipe_save_btn = gr.Button("Save", variant="secondary", scale=1)
+                    recipe_status = gr.HTML("")
+
+                recipe_scalars = [
+                    merge_primary, merge_secondary, merge_tertiary,
+                    merge_interp, merge_multiplier, anima_extend_ratio,
+                    merge_save_mode, merge_device, merge_output_name, merge_discard,
+                    merge_format, merge_clip_format, merge_vae_format,
+                    merge_save_metadata, merge_config_source, merge_add_recipe, merge_bake_vae,
+                ]
+                recipe_dds = [dd for dd, _ in merge_lora_rows]
+                recipe_sts = [st for _, st in merge_lora_rows]
+
+                recipe_save_btn.click(
+                    fn=save_recipe_handler,
+                    inputs=[recipe_name] + recipe_scalars + recipe_dds + recipe_sts + [lora_count_state],
+                    outputs=[recipe_dropdown, recipe_status],
+                    queue=False,
+                )
+                recipe_load_btn.click(
+                    fn=load_recipe_handler,
+                    inputs=[recipe_dropdown],
+                    outputs=(
+                        recipe_scalars + recipe_dds + recipe_sts
+                        + [lora_count_state] + merge_lora_row_layouts
+                        + [secondary_col, tertiary_col, recipe_status]
+                    ),
+                    queue=False,
+                ).then(
+                    fn=primary_badge_handler,
+                    inputs=[merge_primary, merge_secondary, merge_tertiary],
+                    outputs=[primary_badge, secondary_badge, tertiary_badge],
                     show_progress=False,
                     queue=False,
                 )
