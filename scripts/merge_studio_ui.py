@@ -36,15 +36,46 @@ def _vae_choices() -> list[str]:
     return [ORIGINAL_VAE_LABEL, NO_VAE_LABEL] + sorted(vaes.keys())
 
 
-def checkpoint_badge_handler(name: str) -> str:
+_checkpoint_info_cache: dict[tuple[str, float], dict] = {}
+
+
+def _get_cached_checkpoint_info(name: str) -> dict | None:
     if not name:
-        return ""
+        return None
     try:
         path = _checkpoint_path(name)
+        mtime = os.path.getmtime(path) if os.path.exists(path) else 0
+        cache_key = (path, mtime)
+        if cache_key in _checkpoint_info_cache:
+            return _checkpoint_info_cache[cache_key]
         info = inspect_checkpoint(path)
-        return format_badges_html(info)
+        _checkpoint_info_cache[cache_key] = info
+        return info
     except Exception:
-        return ""
+        return None
+
+
+def primary_badge_handler(p_name: str, s_name: str, t_name: str):
+    p_info = _get_cached_checkpoint_info(p_name)
+    s_info = _get_cached_checkpoint_info(s_name)
+    t_info = _get_cached_checkpoint_info(t_name)
+
+    p_html = format_badges_html(p_info) if p_info else ""
+    s_html = format_badges_html(s_info, compatible_with_info=p_info) if s_info else ""
+    t_html = format_badges_html(t_info, compatible_with_info=p_info) if t_info else ""
+    return p_html, s_html, t_html
+
+
+def secondary_badge_handler(p_name: str, s_name: str):
+    p_info = _get_cached_checkpoint_info(p_name)
+    s_info = _get_cached_checkpoint_info(s_name)
+    return format_badges_html(s_info, compatible_with_info=p_info) if s_info else ""
+
+
+def tertiary_badge_handler(p_name: str, t_name: str):
+    p_info = _get_cached_checkpoint_info(p_name)
+    t_info = _get_cached_checkpoint_info(t_name)
+    return format_badges_html(t_info, compatible_with_info=p_info) if t_info else ""
 
 
 def run_inspection_handler(name: str) -> str:
@@ -552,16 +583,38 @@ def create_merge_studio_tab():
                     with gr.Column(visible=False) as tertiary_col:
                         merge_tertiary = gr.Dropdown(label="Tertiary Model (C)", choices=sorted(sd_models.checkpoint_tiles()))
                         tertiary_badge = gr.HTML("")
+                    def refresh_models_and_cache():
+                        _checkpoint_info_cache.clear()
+                        sd_models.list_models()
+
                     create_refresh_button(
                         [merge_primary, merge_secondary, merge_tertiary],
-                        sd_models.list_models,
+                        refresh_models_and_cache,
                         lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
                         "merge_studio_refresh_models",
                     )
 
-                merge_primary.change(fn=checkpoint_badge_handler, inputs=[merge_primary], outputs=[primary_badge], show_progress=False, queue=False)
-                merge_secondary.change(fn=checkpoint_badge_handler, inputs=[merge_secondary], outputs=[secondary_badge], show_progress=False, queue=False)
-                merge_tertiary.change(fn=checkpoint_badge_handler, inputs=[merge_tertiary], outputs=[tertiary_badge], show_progress=False, queue=False)
+                merge_primary.change(
+                    fn=primary_badge_handler,
+                    inputs=[merge_primary, merge_secondary, merge_tertiary],
+                    outputs=[primary_badge, secondary_badge, tertiary_badge],
+                    show_progress=False,
+                    queue=False,
+                )
+                merge_secondary.change(
+                    fn=secondary_badge_handler,
+                    inputs=[merge_primary, merge_secondary],
+                    outputs=[secondary_badge],
+                    show_progress=False,
+                    queue=False,
+                )
+                merge_tertiary.change(
+                    fn=tertiary_badge_handler,
+                    inputs=[merge_primary, merge_tertiary],
+                    outputs=[tertiary_badge],
+                    show_progress=False,
+                    queue=False,
+                )
 
                 with gr.Row():
                     merge_interp = gr.Radio(

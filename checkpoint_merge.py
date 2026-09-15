@@ -270,6 +270,32 @@ def merge_checkpoints(
     secondary_info = _checkpoint_info(secondary_name) if secondary_name else None
     tertiary_info = _checkpoint_info(tertiary_name) if tertiary_name else None
 
+    # Fast architecture compatibility check before heavy engine loading
+    try:
+        from checkpoint_inspector import inspect_checkpoint, get_model_family
+        p_insp = inspect_checkpoint(primary_info.filename)
+        fam_a = get_model_family(p_insp.get("architecture", ""))
+
+        if secondary_info:
+            s_insp = inspect_checkpoint(secondary_info.filename)
+            fam_b = get_model_family(s_insp.get("architecture", ""))
+            if fam_a != "other" and fam_b != "other" and fam_a != fam_b:
+                arch_a = p_insp.get("architecture", "Unknown")
+                arch_b = s_insp.get("architecture", "Unknown")
+                raise MergeError(f"Incompatible models: Model A is '{arch_a}' ({fam_a.upper()}) but Model B is '{arch_b}' ({fam_b.upper()}). Checkpoints from different architecture families cannot be merged.")
+
+        if tertiary_info:
+            t_insp = inspect_checkpoint(tertiary_info.filename)
+            fam_c = get_model_family(t_insp.get("architecture", ""))
+            if fam_a != "other" and fam_c != "other" and fam_a != fam_c:
+                arch_a = p_insp.get("architecture", "Unknown")
+                arch_c = t_insp.get("architecture", "Unknown")
+                raise MergeError(f"Incompatible models: Model A is '{arch_a}' ({fam_a.upper()}) but Model C is '{arch_c}' ({fam_c.upper()}). Checkpoints from different architecture families cannot be merged.")
+    except MergeError:
+        raise
+    except Exception:
+        pass
+
     if progress_cb:
         progress_cb("Loading Primary Model (A)...")
     engine_a = _load_engine(primary_info.filename)

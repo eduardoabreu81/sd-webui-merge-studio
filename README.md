@@ -53,7 +53,8 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Weighted Sum (`A * (1 - M) + B * M`)**: Smoothly blend two checkpoints using an intuitive multiplier slider.
 - **Add Difference (`A + (B - C) * M`)**: Extract unique stylistic or architectural differences between models B and C, and inject them into base model A.
 - **No Interpolation (Format Converter)**: Convert or re-quantize a single checkpoint without merging. Switch between FP16, BF16, FP8 (e4m3fn / e5m2), and INT8.
-- **Instant Component Badges**: Selecting Model A, B, or C immediately displays a badge showing component presence (`UNet/DiT`, `CLIP/T5/Qwen`, `VAE`), detected model family, precision, and file size.
+- **Instant Present-Only Badges & Architecture Detection**: Selecting Model A, B, or C immediately identifies model family (Anima, Illustrious, Pony, SDXL, Flux, Wan2.1, SD1.5) and **only displays the components actually present in the file** (`DiT/UNet`, `Text Encoder`, `VAE`, `LLM Adapter`), keeping the interface clean with zero false-alarm "Missing" clutter.
+- **Cross-Model Compatibility Protection**: Automatically warns if Model B or C belongs to an incompatible architecture family relative to Model A (e.g. attempting to mix Anima with SDXL or Flux), preventing corrupted merges both visually in the UI and via safety validation before engine loading.
 - **Per-Component Precision**: Target different datatypes for diffusion models, text encoders, and VAEs independently.
 - **Adaptive ConvRot Quantization**: Automatically selects optimal group sizes (256, 128, 64) for channel-sensitive architectures like SDXL and Illustrious to prevent shape mismatch crashes.
 
@@ -74,7 +75,8 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 ### 4. Model Recipe & Inspector
 
 - **Instant Header Analysis**: Reads `.safetensors` headers in <5ms with zero VRAM or RAM overhead.
-- **Component Status**: Clearly identifies whether a checkpoint contains a UNet/DiT, CLIP/T5/Qwen text encoder, VAE, or LLM adapters.
+- **Component Status**: Clearly identifies whether a checkpoint contains a UNet/DiT, CLIP/T5/Qwen text encoder, VAE, or LLM adapters (only showing embedded components).
+- **Turbo & Anima Turbo 1.1 Detection**: Mechanically identifies whether a checkpoint contains a baked Turbo LoRA, was merged from an Anima Turbo 1.1 base model, or includes Turbo workflow nodes, highlighting lineage and bake strengths in a dedicated callout card.
 - **Lineage & Recipe Detection**:
   - Automatically reads WebUI merge recipes (`sd_merge_recipe`).
   - Mechanically extracts ComfyUI workflows and prompt graphs (`UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoaderModelOnly`).

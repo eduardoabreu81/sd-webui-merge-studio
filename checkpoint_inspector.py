@@ -34,27 +34,65 @@ def read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
     return header, 8 + header_len
 
 
-def _detect_architecture(keys: list[str], has_llm_adapter: bool) -> str:
+def _detect_architecture(
+    keys: list[str],
+    has_llm_adapter: bool,
+    metadata: dict[str, Any] | None = None,
+    filename: str = "",
+) -> str:
+    fn_lower = filename.lower()
+    meta_str = json.dumps(metadata, ensure_ascii=False).lower() if metadata else ""
+
     if any(k.startswith(("double_blocks.", "model.diffusion_model.double_blocks.", "img_in.")) for k in keys):
         return "Flux (MMDiT)"
     if any(k.startswith(("model.diffusion_model.joint_blocks.", "joint_blocks.")) for k in keys):
         return "SD3 / SD3.5 (MMDiT)"
-    if has_llm_adapter or any(k.startswith("net.") for k in keys) or any("qwen" in k for k in keys):
+    if has_llm_adapter or any(k.startswith("net.") for k in keys) or any("qwen" in k for k in keys) or "anima" in fn_lower or "anima" in meta_str:
         return "Anima (DiT)"
     if any(k.startswith(("v_blocks.", "model.diffusion_model.v_blocks.", "head.weight")) for k in keys):
         return "Wan2.1 (DiT)"
     if any(k.startswith("model.diffusion_model.blocks.") for k in keys):
         return "DiT / Diffusion Model"
-    if any(k.startswith("conditioner.embedders.") for k in keys):
-        return "SDXL (UNet)"
-    if any(k.startswith("cond_stage_model.") for k in keys):
-        return "SD 1.5 / SD 2.1 (UNet)"
-    if any(k.startswith(("model.diffusion_model.input_blocks.", "diffusion_model.input_blocks.", "input_blocks.")) for k in keys):
-        # Heuristic for SDXL vs SD 1.5 if text encoder is missing
-        # SDXL has 3 stages (320, 640, 1280) while SD 1.5 has 4 stages (320, 640, 1280, 1280)
+
+    is_sdxl = any(k.startswith("conditioner.embedders.") for k in keys)
+    has_stage_3 = False
+    if not is_sdxl and any(k.startswith(("model.diffusion_model.input_blocks.", "diffusion_model.input_blocks.", "input_blocks.")) for k in keys):
         has_stage_3 = any("input_blocks.9." in k or "input_blocks.10." in k or "input_blocks.11." in k for k in keys)
-        return "SD 1.5 / SD 2.1 (UNet)" if has_stage_3 else "SDXL (UNet)"
+        if not has_stage_3:
+            is_sdxl = True
+
+    if is_sdxl:
+        if "pony" in fn_lower or "pony" in meta_str or "ponydiffusion" in meta_str:
+            return "Pony (SDXL)"
+        if "illustrious" in fn_lower or "illustrious" in meta_str or "il_v" in fn_lower or "il-v" in fn_lower:
+            return "Illustrious (SDXL)"
+        return "SDXL (UNet)"
+
+    if any(k.startswith("cond_stage_model.") for k in keys) or has_stage_3:
+        return "SD 1.5 / SD 2.1 (UNet)"
+
     return "Diffusion Model"
+
+
+def get_model_family(arch: str) -> str:
+    """Returns the base architecture family for compatibility verification."""
+    if not arch:
+        return "other"
+    arch_lower = arch.lower()
+    if "anima" in arch_lower:
+        return "anima"
+    if "flux" in arch_lower:
+        return "flux"
+    if "wan" in arch_lower:
+        return "wan"
+    if "sd3" in arch_lower:
+        return "sd3"
+    if "sdxl" in arch_lower or "pony" in arch_lower or "illustrious" in arch_lower:
+        return "sdxl"
+    if "sd 1.5" in arch_lower or "sd 2.1" in arch_lower:
+        return "sd1"
+    return "other"
+
 
 
 def _detect_precision(header: dict[str, Any]) -> str:
@@ -277,7 +315,8 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
     has_vae = any(k.startswith(VAE_PREFIXES) for k in keys)
     has_llm_adapter = any("llm_adapter" in k for k in keys)
 
-    arch = _detect_architecture(keys, has_llm_adapter)
+    filename = os.path.basename(filepath)
+    arch = _detect_architecture(keys, has_llm_adapter, metadata=metadata, filename=filename)
     precision = _detect_precision(header)
 
     # Parse sd_merge_recipe if present
@@ -305,8 +344,8 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
     mb = file_size / (1024 ** 2)
     size_str = f"{gb:.2f} GB ({mb:,.0f} MB)" if gb >= 1.0 else f"{mb:.1f} MB"
 
-    return {
-        "filename": os.path.basename(filepath),
+    info_dict = {
+        "filename": filename,
         "filepath": filepath,
         "file_size": file_size,
         "size_str": size_str,
@@ -324,9 +363,99 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         "models": models,
         "raw_metadata": metadata,
     }
+    info_dict["turbo"] = detect_turbo(info_dict)
+    return info_dict
 
 
-def format_badges_html(info: dict[str, Any]) -> str:
+def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
+    """Detects whether a checkpoint contains a Turbo LoRA, was merged from Anima Turbo 1.1,
+    or is an Anima Turbo checkpoint itself.
+    """
+    filename = info.get("filename", "").lower()
+    arch = info.get("architecture", "")
+    metadata = info.get("raw_metadata") or {}
+    recipe = info.get("recipe")
+    comfy_recipe = info.get("comfy_recipe")
+    models = info.get("models") or {}
+
+    found_turbo = False
+    turbo_kind = None
+    details = []
+
+    # 1. Check baked LoRAs in WebUI merge recipe
+    if recipe and isinstance(recipe, dict):
+        baked = recipe.get("baked_loras") or recipe.get("loras") or []
+        for lora in baked:
+            l_name = lora.get("name", "")
+            if "turbo" in l_name.lower():
+                found_turbo = True
+                turbo_kind = "Baked Turbo LoRA"
+                l_str = lora.get("strength", 1.0)
+                details.append(f"Baked Turbo LoRA: <b>{l_name}</b> (strength: {l_str})")
+
+        p_hash = recipe.get("primary_model_hash", "")
+        s_hash = recipe.get("secondary_model_hash", "")
+        t_hash = recipe.get("tertiary_model_hash", "")
+        for role, h in [("Model A", p_hash), ("Model B", s_hash), ("Model C", t_hash)]:
+            if h and isinstance(models, dict) and h in models:
+                m_name = models[h].get("name", "")
+                if "turbo" in m_name.lower():
+                    found_turbo = True
+                    if not turbo_kind:
+                        turbo_kind = "Merged from Turbo Checkpoint"
+                    details.append(f"Merge Parent ({role}): <b>{m_name}</b>")
+
+    # 2. Check ComfyUI workflow / prompt recipe
+    if comfy_recipe and isinstance(comfy_recipe, dict):
+        for lora in comfy_recipe.get("loras", []):
+            l_name = lora.get("name", "")
+            if "turbo" in l_name.lower():
+                found_turbo = True
+                if not turbo_kind:
+                    turbo_kind = "Baked Turbo LoRA"
+                l_str = lora.get("strength_model", lora.get("strength", 1.0))
+                details.append(f"ComfyUI Baked LoRA: <b>{l_name}</b> (strength: {l_str})")
+
+        for bm in comfy_recipe.get("base_models", []):
+            b_name = bm.get("name", "")
+            if "turbo" in b_name.lower():
+                found_turbo = True
+                if not turbo_kind:
+                    turbo_kind = "Merged from Turbo Checkpoint"
+                details.append(f"ComfyUI Base Model: <b>{b_name}</b>")
+
+    # 3. Check raw metadata strings
+    if not found_turbo and metadata:
+        meta_str = json.dumps(metadata, ensure_ascii=False).lower()
+        if any(w in meta_str for w in ("anima-turbo-v1.1", "anima_turbo_v1.1", "animaturbo_v1.1", "animaturbov1.1", "anima turbo 1.1")):
+            found_turbo = True
+            turbo_kind = "Anima Turbo 1.1 in Lineage"
+            details.append("Anima Turbo 1.1 identified in checkpoint metadata / workflow graph")
+        elif "turbo" in meta_str and "anima" in arch.lower():
+            if any(w in meta_str for w in ("anima-turbo", "anima_turbo", "turbo.safetensors")):
+                found_turbo = True
+                turbo_kind = "Turbo Acceleration Detected"
+                details.append("Turbo model reference detected in workflow metadata")
+
+    # 4. Check filename itself
+    if not found_turbo and "turbo" in filename:
+        if any(w in filename for w in ("1.1", "v11", "v1.1", "1-1")):
+            found_turbo = True
+            turbo_kind = "Anima Turbo 1.1 Checkpoint"
+            details.append(f"Checkpoint filename identifies as Anima Turbo 1.1 ({info.get('filename')})")
+        else:
+            found_turbo = True
+            turbo_kind = "Turbo Checkpoint"
+            details.append(f"Checkpoint filename identifies as Turbo ({info.get('filename')})")
+
+    return {
+        "has_turbo": found_turbo,
+        "kind": turbo_kind or "Turbo",
+        "details": details,
+    }
+
+
+def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any] | None = None) -> str:
     """Returns a compact HTML line with component badges for the merge studio tab."""
     if not info or "error" in info:
         return ""
@@ -334,45 +463,58 @@ def format_badges_html(info: dict[str, Any]) -> str:
     comps = info.get("components", {})
     arch = info.get("architecture", "Unknown")
     is_dit = any(w in arch for w in ("DiT", "Flux", "SD3", "Wan", "Anima"))
-    model_type = "DiT" if is_dit else "UNet"
 
-    dit_badge = (
-        f'<span style="color: #10b981; font-weight: bold;">{model_type}: Present</span>'
-        if comps.get("unet")
-        else f'<span style="color: #ef4444; font-weight: bold;">{model_type}: Missing</span>'
-    )
-    # Dynamic text encoder label
-    if "Anima" in arch:
-        te_label = "Text Encoder (Qwen)"
-    elif "Flux" in arch or "SD3" in arch:
-        te_label = "Text Encoder (T5/CLIP)"
-    else:
-        te_label = "CLIP"
+    # Only show components that are PRESENT
+    present_parts = []
+    if comps.get("unet"):
+        model_type = "DiT" if is_dit else "UNet"
+        present_parts.append(f'<span style="color: #10b981; font-weight: bold;">{model_type}</span>')
 
-    clip_badge = (
-        f'<span style="color: #10b981; font-weight: bold;">{te_label}: Present</span>'
-        if comps.get("clip")
-        else f'<span style="color: #f59e0b; font-weight: bold;">{te_label}: Missing</span>'
-    )
-    vae_badge = (
-        '<span style="color: #10b981; font-weight: bold;">VAE: Present</span>'
-        if comps.get("vae")
-        else '<span style="color: #f59e0b; font-weight: bold;">VAE: Missing</span>'
-    )
+    if comps.get("clip"):
+        if "Anima" in arch:
+            te_label = "Text Encoder (Qwen)"
+        elif "Flux" in arch or "SD3" in arch:
+            te_label = "Text Encoder (T5/CLIP)"
+        else:
+            te_label = "CLIP"
+        present_parts.append(f'<span style="color: #10b981; font-weight: bold;">{te_label}</span>')
 
-    llm_badge = ""
+    if comps.get("vae"):
+        present_parts.append('<span style="color: #10b981; font-weight: bold;">VAE</span>')
+
     if comps.get("llm_adapter"):
-        llm_badge = ' | <span style="color: #38bdf8; font-weight: bold;">LLM Adapter: Present</span>'
+        present_parts.append('<span style="color: #38bdf8; font-weight: bold;">LLM Adapter</span>')
+
+    comp_str = " | ".join(present_parts) if present_parts else '<span style="color: #9ca3af;">No standard components</span>'
+
+    turbo_data = info.get("turbo") or detect_turbo(info)
+    turbo_badge = ""
+    if turbo_data.get("has_turbo"):
+        turbo_badge = f' &nbsp;<span style="background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">{turbo_data.get("kind", "Turbo")}</span>'
 
     prec = info.get("precision", "Unknown")
     size = info.get("size_str", "")
 
-    return (
+    html = (
         f"<div style='margin-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.5;'>"
-        f"[{dit_badge} | {clip_badge} | {vae_badge}{llm_badge}] &nbsp;•&nbsp; "
-        f"<b>{arch}</b> &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
+        f"[{comp_str}] &nbsp;•&nbsp; "
+        f"<b>{arch}</b>{turbo_badge} &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
         f"</div>"
     )
+
+    # Incompatibility check against Model A
+    if compatible_with_info and not compatible_with_info.get("error"):
+        fam_self = get_model_family(arch)
+        arch_other = compatible_with_info.get("architecture", "Unknown")
+        fam_other = get_model_family(arch_other)
+        if fam_self != "other" and fam_other != "other" and fam_self != fam_other:
+            html += (
+                f"<div style='margin-top: 4px; padding: 4px 8px; border-radius: 4px; background: rgba(239, 68, 68, 0.15); border: 1px solid #ef4444; color: #fca5a5; font-size: 11.5px; font-weight: 600;'>"
+                f"Incompatible Architecture: <b>{arch}</b> cannot be merged with Model A (<b>{arch_other}</b>)"
+                f"</div>"
+            )
+
+    return html
 
 
 def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
@@ -395,35 +537,59 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     models = info.get("models") or {}
     raw_meta = info.get("raw_metadata") or {}
 
-    # Component status pills
-    def _comp_pill(name: str, present: bool, note: str = ""):
-        color = "#10b981" if present else "#f59e0b"
+    # Component status pills (only present components are rendered)
+    def _comp_pill(name: str, note: str = ""):
         desc = f" ({note})" if note else ""
-        status_text = "Present" if present else "Missing"
         return (
             f"<div style='display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);'>"
             f"<span style='font-weight: 500;'>{name}</span>"
-            f"<span style='color: {color}; font-weight: bold;'>{status_text}{desc}</span>"
+            f"<span style='color: #10b981; font-weight: bold;'>Present{desc}</span>"
             f"</div>"
         )
 
     is_dit = any(w in arch for w in ("DiT", "Flux", "SD3", "Wan", "Anima"))
     model_name = "Diffusion Transformer (DiT)" if is_dit else "Diffusion Model (UNet)"
-    unet_note = "DiT denoising network" if (comps.get("unet") and is_dit) else ("UNet denoising network" if comps.get("unet") else "No diffusion model detected")
+    unet_note = "DiT denoising network" if is_dit else "UNet denoising network"
     if "Anima" in arch:
         te_pill_label = "Text Encoder (Qwen 3)"
-        clip_note = "Embedded Qwen 3 text encoder" if comps.get("clip") else "Requires external Qwen text encoder"
+        clip_note = "Embedded Qwen 3 text encoder"
     elif "Flux" in arch or "SD3" in arch:
         te_pill_label = "Text Encoder (T5/CLIP)"
-        clip_note = "Embedded T5/CLIP text encoder" if comps.get("clip") else "Requires external text encoder"
+        clip_note = "Embedded T5/CLIP text encoder"
     else:
         te_pill_label = "Text Encoder (CLIP)"
-        clip_note = "Embedded CLIP text encoder" if comps.get("clip") else "Requires external text encoder"
-    vae_note = "Embedded autoencoder" if comps.get("vae") else "Requires external VAE"
+        clip_note = "Embedded CLIP text encoder"
+    vae_note = "Embedded autoencoder"
 
-    llm_pill = ""
+    comp_pills = []
+    if comps.get("unet"):
+        comp_pills.append(_comp_pill(model_name, unet_note))
+    if comps.get("clip"):
+        comp_pills.append(_comp_pill(te_pill_label, clip_note))
+    if comps.get("vae"):
+        comp_pills.append(_comp_pill("VAE (Autoencoder)", vae_note))
     if comps.get("llm_adapter"):
-        llm_pill = _comp_pill("Anima LLM Adapter", True, "Embedded DiT alignment weights")
+        comp_pills.append(_comp_pill("Anima LLM Adapter", "Embedded DiT alignment weights"))
+
+    if not comp_pills:
+        comp_pills.append("<div style='padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); color: #ef4444;'>No standard neural components detected in file header.</div>")
+
+    comp_grid_html = "".join(comp_pills)
+
+    # Turbo Acceleration Callout
+    turbo_data = info.get("turbo") or detect_turbo(info)
+    turbo_html = ""
+    if turbo_data.get("has_turbo"):
+        details_items = "".join(f"<div style='margin-top: 3px;'>• {d}</div>" for d in turbo_data.get("details", []))
+        turbo_html = (
+            f"<div style='margin-top: 14px; padding: 12px 16px; border-radius: 8px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35);'>"
+            f"<div style='display: flex; justify-content: space-between; align-items: center;'>"
+            f"<div style='font-size: 13px; font-weight: 700; color: #f59e0b; text-transform: uppercase;'>Turbo Acceleration Detected</div>"
+            f"<span style='font-size: 11px; background: rgba(245, 158, 11, 0.2); color: #f59e0b; padding: 2px 8px; border-radius: 4px; font-weight: bold;'>{turbo_data.get('kind')}</span>"
+            f"</div>"
+            f"<div style='font-size: 13px; color: #f3f4f6; margin-top: 6px; line-height: 1.5;'>{details_items}</div>"
+            f"</div>"
+        )
 
     # Recipe section HTML
     recipe_html = ""
@@ -610,11 +776,9 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"</div>"
         # Component Grid
         f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 14px;'>"
-        f"{_comp_pill(model_name, comps.get('unet'), unet_note)}"
-        f"{_comp_pill(te_pill_label, comps.get('clip'), clip_note)}"
-        f"{_comp_pill('VAE (Autoencoder)', comps.get('vae'), vae_note)}"
-        f"{llm_pill}"
+        f"{comp_grid_html}"
         f"</div>"
+        f"{turbo_html}"
         f"</div>"
         # Recipe Section
         f"{all_recipes_html}"
