@@ -92,3 +92,23 @@
     from { transform: rotate(0deg); }
     to { transform: rotate(360deg); }
 }
+
+/* LoRA Per-Row Remove Button */
+.merge-studio-remove-lora-btn {
+    color: #ef4444 !important;
+    border: 1px solid rgba(239, 68, 68, 0.4) !important;
+    background: rgba(239, 68, 68, 0.1) !important;
+    font-weight: 900 !important;
+    font-size: 14px !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease-in-out !important;
+}
+
+.merge-studio-remove-lora-btn:hover {
+    background: #ef4444 !important;
+    color: #ffffff !important;
+    border-color: #ef4444 !important;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.5) !important;
+}
+

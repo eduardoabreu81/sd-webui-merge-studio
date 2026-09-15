@@ -59,7 +59,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 ### 2. Dynamic LoRA Baking (Up to 10 LoRAs)
 
-- **Dynamic Slots**: Start with 1 slot and add more as needed with **Add LoRA**, or trim slots with **Remove LoRA** and **Clear All LoRAs** (up to 10 simultaneous LoRAs).
+- **Dynamic Slots & Per-Row Removal**: Start with 1 slot and add more as needed with **Add LoRA** (up to 10 simultaneous LoRAs). Each row features its own dedicated red **X** button to delete that specific LoRA and automatically compact the list, plus a **Clear All LoRAs** button.
 - **Native Forge Engine**: Uses Forge's native LoRA application pipeline rather than external approximations, ensuring identical results to loading LoRAs at generation time.
 - **Preserved Trigger Words**: Activation text from LoRA metadata is automatically preserved in sidecar notes so you always know the required trigger words.
 - **Anima & DiT Smart Warnings**: Normalizes trigger words to lowercase spacing and warns if a LoRA contains LLM (Qwen3) adapter weights that could destabilize Anima checkpoints.

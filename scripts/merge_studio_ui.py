@@ -577,24 +577,27 @@ def create_merge_studio_tab():
                     MAX_LORAS = 10
                     merge_lora_rows = []
                     merge_lora_row_layouts = []
+                    merge_lora_del_btns = []
                     for i in range(1, MAX_LORAS + 1):
                         with gr.Row(visible=(i == 1)) as lora_row_layout:
-                            merge_lora_dd = gr.Dropdown(label=f"LoRA {i}", choices=_lora_choices(), value=NONE_LABEL)
+                            merge_lora_dd = gr.Dropdown(label=f"LoRA {i}", choices=_lora_choices(), value=NONE_LABEL, scale=3)
                             merge_strength = gr.Slider(
                                 label="Strength",
                                 minimum=0.0,
                                 maximum=2.0,
                                 value=1.0,
                                 step=0.05,
+                                scale=2,
                                 info="For Anima checkpoints, consider starting around 0.6-0.8 (e.g. 0.6 for Turbo)." if i == 1 else None,
                             )
                             create_refresh_button([merge_lora_dd], lambda: None, lambda: {"choices": _lora_choices()}, f"merge_studio_lora_refresh_{i}")
+                            del_btn = gr.Button("X", elem_classes=["tool", "merge-studio-remove-lora-btn"], variant="stop")
                             merge_lora_rows.append((merge_lora_dd, merge_strength))
                             merge_lora_row_layouts.append(lora_row_layout)
+                            merge_lora_del_btns.append(del_btn)
 
                     with gr.Row():
                         add_lora_btn = gr.Button("Add LoRA", variant="secondary")
-                        remove_lora_btn = gr.Button("Remove LoRA", variant="secondary")
                         clear_loras_btn = gr.Button("Clear All LoRAs", variant="secondary")
 
                     lora_count_state = gr.State(value=1)
@@ -602,12 +605,6 @@ def create_merge_studio_tab():
                     def add_lora_slot(count):
                         new_count = min(count + 1, MAX_LORAS)
                         return [new_count] + [gr.update(visible=(i < new_count)) for i in range(MAX_LORAS)]
-
-                    def remove_lora_slot(count):
-                        new_count = max(1, count - 1)
-                        row_updates = [gr.update(visible=(i < new_count)) for i in range(MAX_LORAS)]
-                        val_updates = [gr.update(value=NONE_LABEL) if i >= new_count else gr.update() for i in range(MAX_LORAS)]
-                        return [new_count] + row_updates + val_updates
 
                     def clear_all_slots():
                         row_updates = [gr.update(visible=(i == 0)) for i in range(MAX_LORAS)]
@@ -621,18 +618,45 @@ def create_merge_studio_tab():
                         outputs=[lora_count_state] + merge_lora_row_layouts,
                         queue=False,
                     )
-                    remove_lora_btn.click(
-                        fn=remove_lora_slot,
-                        inputs=[lora_count_state],
-                        outputs=[lora_count_state] + merge_lora_row_layouts + [dd for dd, _ in merge_lora_rows],
-                        queue=False,
-                    )
                     clear_loras_btn.click(
                         fn=clear_all_slots,
                         inputs=[],
                         outputs=[lora_count_state] + merge_lora_row_layouts + [dd for dd, _ in merge_lora_rows] + [st for _, st in merge_lora_rows],
                         queue=False,
                     )
+
+                    def make_remove_lora_fn(k: int):
+                        def remove_lora_at(count, *vals):
+                            dds = list(vals[:MAX_LORAS])
+                            sts = list(vals[MAX_LORAS:])
+                            if count <= 1:
+                                dds[0] = NONE_LABEL
+                                sts[0] = 1.0
+                                new_count = 1
+                            else:
+                                dds.pop(k)
+                                sts.pop(k)
+                                dds.append(NONE_LABEL)
+                                sts.append(1.0)
+                                new_count = max(1, count - 1)
+
+                            row_updates = [gr.update(visible=(i < new_count)) for i in range(MAX_LORAS)]
+                            dd_updates = [gr.update(value=dds[i]) for i in range(MAX_LORAS)]
+                            st_updates = [gr.update(value=sts[i]) for i in range(MAX_LORAS)]
+                            return [new_count] + row_updates + dd_updates + st_updates
+
+                        return remove_lora_at
+
+                    all_lora_inputs = [lora_count_state] + [dd for dd, _ in merge_lora_rows] + [st for _, st in merge_lora_rows]
+                    all_lora_outputs = [lora_count_state] + merge_lora_row_layouts + [dd for dd, _ in merge_lora_rows] + [st for _, st in merge_lora_rows]
+
+                    for idx, del_btn in enumerate(merge_lora_del_btns):
+                        del_btn.click(
+                            fn=make_remove_lora_fn(idx),
+                            inputs=all_lora_inputs,
+                            outputs=all_lora_outputs,
+                            queue=False,
+                        )
 
                 merge_save_mode = gr.Radio(
                     choices=[label for label, _ in SAVE_MODE_CHOICES],
