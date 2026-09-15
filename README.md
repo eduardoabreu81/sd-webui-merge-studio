@@ -84,7 +84,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 ### 5. Model Recipe & Inspector
 
-Inspects **any** model Forge loads, not just checkpoints — pick the type and the dropdown follows.
+Inspects **any** model Forge loads, not just checkpoints. One dropdown lists them all (type `lora` to filter), and the card is chosen from what the file *is* — read from its header — not from which folder it sits in.
 
 - **Instant Header Analysis**: Reads `.safetensors` headers in <5ms with zero VRAM or RAM overhead.
 - **Component Status**: Clearly identifies whether a checkpoint contains a UNet/DiT, CLIP/T5/Qwen text encoder, VAE, or LLM adapters (only showing embedded components).

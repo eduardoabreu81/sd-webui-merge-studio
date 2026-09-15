@@ -80,7 +80,10 @@ def _normalize_activation_text(activation_text: str, engine) -> str:
 # to spare.
 _LLM_ADAPTER_SIGNIFICANCE = 0.01
 
-_LORA_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", "diff")
+# Dots kept on the diff-style markers: a bare "diff" is a substring of
+# "model.diffusion_model.", so it would match every key in the LoRA and
+# pull scalars like alpha into the magnitude comparison.
+_LORA_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", ".diff.", ".diff_b")
 
 
 def _lora_touches_llm_adapter(lora_sd: dict) -> bool:

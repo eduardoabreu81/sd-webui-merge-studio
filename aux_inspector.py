@@ -37,7 +37,10 @@ _LORA_PREFIXES = (
 
 # Tensors that carry a LoRA's actual magnitude. `alpha` is a scalar and
 # `.weight` alone would also catch bias/norm copies, so match the factors.
-_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", "diff")
+# The diff-style markers keep their surrounding dots: a bare "diff" is a
+# substring of "model.diffusion_model.", which would match every key of an
+# ordinary checkpoint.
+_FACTOR_MARKERS = ("lora_down", "lora_up", "lora_A", "lora_B", ".diff.", ".diff_b")
 
 _TARGET_GROUPS = ("self_attn", "cross_attn", "mlp", "adaln")
 
@@ -355,6 +358,44 @@ def _classify_module(keys: list[str], header: dict[str, Any]) -> tuple[str, str]
             + " (not one of the layouts recognised here)"
         )
     return "unknown", "Could not classify from tensor names"
+
+
+def detect_file_kind(filepath: str) -> str:
+    """"lora" | "checkpoint" | "module" | "unknown", decided from the header.
+
+    A file states what it is, so nothing has to be told which type it is --
+    and a LoRA filed under the checkpoints folder still reads as a LoRA.
+
+    LoRA is tested first on purpose: its keys look like a diffusion model's
+    (`diffusion_model.blocks.0....`) and are only distinguishable by the
+    factor suffix, so testing for a checkpoint first would swallow it.
+    """
+    try:
+        header, _ = read_safetensors_header(filepath)
+    except Exception:
+        return "unknown"
+
+    keys = [k for k in header if k != "__metadata__"]
+    if not keys:
+        return "unknown"
+
+    if any(any(m in k for m in _FACTOR_MARKERS) for k in keys):
+        return "lora"
+
+    diffusion_markers = (
+        "model.diffusion_model.",
+        "diffusion_model.",
+        "double_blocks.",
+        "joint_blocks.",
+        "input_blocks.",
+        "net.blocks.",
+        "blocks.",
+    )
+    if any(k.startswith(diffusion_markers) for k in keys):
+        return "checkpoint"
+
+    kind, _ = _classify_module(keys, header)
+    return "module" if kind in ("text_encoder", "vae") else "unknown"
 
 
 def inspect_module(filepath: str) -> dict[str, Any]:
