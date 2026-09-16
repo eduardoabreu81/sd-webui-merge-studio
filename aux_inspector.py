@@ -497,14 +497,23 @@ _CARD = "background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,
 _GREEN, _AMBER, _RED, _GREY, _BLUE = "#10b981", "#f59e0b", "#ef4444", "#9ca3af", "#38bdf8"
 
 
+def _esc(value: Any) -> str:
+    """Escapes a value read out of a LoRA/module file for interpolation into
+    the dashboard HTML. Trainer-written header fields are markup otherwise."""
+    return html.escape(str(value), quote=True)
+
+
 def _err_card(msg: str) -> str:
     return (
         f"<div style='padding: 16px; border-radius: 8px; background: rgba(239,68,68,0.1); "
-        f"border: 1px solid {_RED}; color: #fca5a5;'><b>Error:</b> {msg}</div>"
+        f"border: 1px solid {_RED}; color: #fca5a5;'><b>Error:</b> {_esc(msg)}</div>"
     )
 
 
 def _badge(text: str, color: str) -> str:
+    # No call site passes markup, so the badge text is always escaped: the
+    # precision badge is filled straight from the file's dtype codes.
+    text = _esc(text)
     return (
         f"<span style='background: {color}22; color: {color}; border: 1px solid {color}66; "
         f"padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;'>{text}</span>"
@@ -522,9 +531,9 @@ def _row(label: str, value: str) -> str:
 def _header_block(info: dict[str, Any], badges: str) -> str:
     return (
         f"<div style='display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px;'>"
-        f"<div><div style='font-size:17px; font-weight:bold;'>{info['filename']}</div>"
+        f"<div><div style='font-size:17px; font-weight:bold;'>{_esc(info['filename'])}</div>"
         f"<div style='color:{_GREY}; font-size:12px; margin-top:2px;'>"
-        f"{info['size_str']} &nbsp;&bull;&nbsp; {info['total_tensors']:,} tensors</div></div>"
+        f"{_esc(info['size_str'])} &nbsp;&bull;&nbsp; {info['total_tensors']:,} tensors</div></div>"
         f"<div style='display:flex; gap:6px; flex-wrap:wrap;'>{badges}</div></div>"
     )
 
@@ -618,7 +627,7 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
     if gen:
         arch_row = f"Anima, {gen}-block"
     elif foreign:
-        arch_row = f"<span style='color:{_AMBER};'>{foreign}</span> &mdash; not an Anima LoRA"
+        arch_row = f"<span style='color:{_AMBER};'>{_esc(foreign)}</span> &mdash; not an Anima LoRA"
     else:
         arch_row = "unrecognised"
     body = _row("Adapter format", info.get("algorithm", "&mdash;"))
@@ -627,7 +636,7 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
     body += _row("Rank", rank_str)
     body += _row("Modules touched", target_str)
     body += _row("LLM adapter", _llm_adapter_line(info))
-    body += _row("Key convention", f"<code>{info.get('key_convention')}</code>")
+    body += _row("Key convention", f"<code>{_esc(info.get('key_convention'))}</code>")
 
     warn = ""
     if info.get("llm_adapter_significant"):
@@ -645,14 +654,14 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
             f"<div style='{_CARD} margin-top:10px;'>"
             f"<div style='font-weight:bold; font-size:12px; margin-bottom:6px;'>"
             f"Produced by extraction, not training</div>"
-            + _row("Format / mode", f"<code>{ext['format']}</code> / <code>{ext['mode']}</code>")
+            + _row("Format / mode", f"<code>{_esc(ext['format'])}</code> / <code>{_esc(ext['mode'])}</code>")
             + (
-                _row("Taken from", f"<code>{ext['base_prefix']}</code> &rarr; <code>{ext['target_prefix']}</code>")
+                _row("Taken from", f"<code>{_esc(ext['base_prefix'])}</code> &rarr; <code>{_esc(ext['target_prefix'])}</code>")
                 if ext.get("base_prefix")
                 else ""
             )
             + (
-                _row("Subtraction precision", f"<code>{ext['subtraction_dtype']}</code>")
+                _row("Subtraction precision", f"<code>{_esc(ext['subtraction_dtype'])}</code>")
                 if ext.get("subtraction_dtype")
                 else ""
             )
@@ -691,7 +700,7 @@ def format_module_dashboard_html(info: dict[str, Any]) -> str:
     badges = _badge(label, colour) + " " + _badge(info.get("precision", "?"), _GREY)
 
     body = _row("Identified as", info.get("description", "&mdash;"))
-    body += _row("Precision", f"<code>{info.get('precision')}</code>")
+    body += _row("Precision", f"<code>{_esc(info.get('precision'))}</code>")
 
     note = ""
     if kind == "text_encoder":

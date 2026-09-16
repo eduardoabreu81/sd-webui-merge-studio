@@ -20,6 +20,18 @@ from typing import Any
 from anima_remap import block_count_from_keys
 
 
+def _esc(value: Any) -> str:
+    """Escapes a value read out of a checkpoint for interpolation into the
+    dashboard HTML.
+
+    Everything these dashboards display -- recipe methods, parent model names,
+    LoRA names, workflow node types, the raw metadata dump -- is attacker-shaped
+    text that travels inside a downloaded .safetensors header. Without this it
+    is markup, and the Gradio page renders whatever the file author wrote.
+    """
+    return html_lib.escape(str(value), quote=True)
+
+
 def read_safetensors_header(path: str) -> tuple[dict[str, Any], int]:
     """Reads the JSON header from a .safetensors file without loading weights."""
     if not os.path.exists(path):
@@ -404,7 +416,7 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
                 found_turbo = True
                 turbo_kind = "Baked Turbo LoRA"
                 l_str = lora.get("strength", 1.0)
-                details.append(f"Baked Turbo LoRA: <b>{l_name}</b> (strength: {l_str})")
+                details.append(f"Baked Turbo LoRA: <b>{_esc(l_name)}</b> (strength: {_esc(l_str)})")
 
         p_hash = recipe.get("primary_model_hash", "")
         s_hash = recipe.get("secondary_model_hash", "")
@@ -416,7 +428,7 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
                     found_turbo = True
                     if not turbo_kind:
                         turbo_kind = "Merged from Turbo Checkpoint"
-                    details.append(f"Merge Parent ({role}): <b>{m_name}</b>")
+                    details.append(f"Merge Parent ({role}): <b>{_esc(m_name)}</b>")
 
     # 2. Check ComfyUI workflow / prompt recipe
     if comfy_recipe and isinstance(comfy_recipe, dict):
@@ -427,7 +439,7 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
                 if not turbo_kind:
                     turbo_kind = "Baked Turbo LoRA"
                 l_str = lora.get("strength_model", lora.get("strength", 1.0))
-                details.append(f"ComfyUI Baked LoRA: <b>{l_name}</b> (strength: {l_str})")
+                details.append(f"ComfyUI Baked LoRA: <b>{_esc(l_name)}</b> (strength: {_esc(l_str)})")
 
         for bm in comfy_recipe.get("base_models", []):
             b_name = bm.get("name", "")
@@ -435,7 +447,7 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
                 found_turbo = True
                 if not turbo_kind:
                     turbo_kind = "Merged from Turbo Checkpoint"
-                details.append(f"ComfyUI Base Model: <b>{b_name}</b>")
+                details.append(f"ComfyUI Base Model: <b>{_esc(b_name)}</b>")
 
     # 3. Check raw metadata strings
     if not found_turbo and metadata:
@@ -455,11 +467,11 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
         if any(w in filename for w in ("1.1", "v11", "v1.1", "1-1")):
             found_turbo = True
             turbo_kind = "Anima Turbo 1.1 Checkpoint"
-            details.append(f"Checkpoint filename identifies as Anima Turbo 1.1 ({info.get('filename')})")
+            details.append(f"Checkpoint filename identifies as Anima Turbo 1.1 ({_esc(info.get('filename'))})")
         else:
             found_turbo = True
             turbo_kind = "Turbo Checkpoint"
-            details.append(f"Checkpoint filename identifies as Turbo ({info.get('filename')})")
+            details.append(f"Checkpoint filename identifies as Turbo ({_esc(info.get('filename'))})")
 
     return {
         "has_turbo": found_turbo,
@@ -609,7 +621,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     if "error" in info:
         return (
             f"<div style='padding: 16px; border-radius: 8px; background: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; color: #fca5a5;'>"
-            f"<b>Error inspecting checkpoint:</b> {info['error']}</div>"
+            f"<b>Error inspecting checkpoint:</b> {_esc(info['error'])}</div>"
         )
 
     comps = info.get("components", {})
@@ -669,7 +681,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"<div style='margin-top: 14px; padding: 12px 16px; border-radius: 8px; background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.35);'>"
             f"<div style='display: flex; justify-content: space-between; align-items: center;'>"
             f"<div style='font-size: 13px; font-weight: 700; color: #f59e0b; text-transform: uppercase;'>Turbo Acceleration Detected</div>"
-            f"<span style='font-size: 11px; background: rgba(245, 158, 11, 0.2); color: #f59e0b; padding: 2px 8px; border-radius: 4px; font-weight: bold;'>{turbo_data.get('kind')}</span>"
+            f"<span style='font-size: 11px; background: rgba(245, 158, 11, 0.2); color: #f59e0b; padding: 2px 8px; border-radius: 4px; font-weight: bold;'>{_esc(turbo_data.get('kind'))}</span>"
             f"</div>"
             f"<div style='font-size: 13px; color: #f3f4f6; margin-top: 6px; line-height: 1.5;'>{details_items}</div>"
             f"</div>"
@@ -694,8 +706,8 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             return (
                 f"<div style='padding: 10px 14px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;'>"
                 f"<div style='font-size: 11px; text-transform: uppercase; color: #f97316; font-weight: 700; margin-bottom: 2px;'>{label}</div>"
-                f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{name}</div>"
-                f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {hash_val}</div>"
+                f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{_esc(name)}</div>"
+                f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {_esc(hash_val)}</div>"
                 f"</div>"
             )
 
@@ -724,7 +736,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
                 lora_rows += (
                     f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px;'>"
                     f"<span><b>{l_name}</b> {trig_badge}</span>"
-                    f"<span style='color: #10b981; font-family: monospace;'>strength: {l_str}</span>"
+                    f"<span style='color: #10b981; font-family: monospace;'>strength: {_esc(l_str)}</span>"
                     f"</div>"
                 )
             loras_html = (
@@ -740,7 +752,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;'>"
             f"<div style='font-size: 16px; font-weight: bold; color: #f97316; display: flex; align-items: center; gap: 8px;'>"
             f"<span>Merge Recipe Detected</span></div>"
-            f"<span style='font-size: 12px; background: rgba(249,115,22,0.2); color: #f97316; padding: 3px 8px; border-radius: 4px;'>Method: {method}</span>"
+            f"<span style='font-size: 12px; background: rgba(249,115,22,0.2); color: #f97316; padding: 3px 8px; border-radius: 4px;'>Method: {_esc(method)}</span>"
             f"</div>"
             f"{math_html}"
             f"<div style='margin-top: 10px;'>{models_cards}</div>"
@@ -766,11 +778,11 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             b_name = bm.get("name", "Unknown")
             b_hash = bm.get("hash", "")
             b_node = bm.get("node", "Loader")
-            hash_snippet = f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {b_hash}</div>" if b_hash else ""
+            hash_snippet = f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {_esc(b_hash)}</div>" if b_hash else ""
             b_cards += (
                 f"<div style='padding: 10px 14px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;'>"
-                f"<div style='font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; margin-bottom: 2px;'>Base Model ({b_node})</div>"
-                f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{b_name}</div>"
+                f"<div style='font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; margin-bottom: 2px;'>Base Model ({_esc(b_node)})</div>"
+                f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{_esc(b_name)}</div>"
                 f"{hash_snippet}"
                 f"</div>"
             )
@@ -782,7 +794,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             m_ratio = mg.get("ratio", "N/A")
             m_cards += (
                 f"<div style='margin-bottom: 8px; font-size: 13px; color: #d1d5db;'>"
-                f"<b>ComfyUI Merge Node:</b> <code style='color: #38bdf8;'>{m_type} (Ratio: {m_ratio})</code>"
+                f"<b>ComfyUI Merge Node:</b> <code style='color: #38bdf8;'>{_esc(m_type)} (Ratio: {_esc(m_ratio)})</code>"
                 f"</div>"
             )
 
@@ -794,11 +806,11 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
                 l_name = l.get("name", "")
                 l_str = l.get("strength", 1.0)
                 l_h = l.get("hash", "")
-                h_badge = f"<span style='font-size: 10px; color: #6b7280; font-family: monospace;'> [{l_h[:12]}...]</span>" if l_h else ""
+                h_badge = f"<span style='font-size: 10px; color: #6b7280; font-family: monospace;'> [{_esc(l_h[:12])}...]</span>" if l_h else ""
                 lora_rows += (
                     f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px;'>"
-                    f"<span><b>{l_name}</b>{h_badge}</span>"
-                    f"<span style='color: #10b981; font-family: monospace; font-weight: 600;'>strength: {l_str}</span>"
+                    f"<span><b>{_esc(l_name)}</b>{h_badge}</span>"
+                    f"<span style='color: #10b981; font-family: monospace; font-weight: 600;'>strength: {_esc(l_str)}</span>"
                     f"</div>"
                 )
             c_loras_html = (
@@ -813,9 +825,9 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         if c_encoders or c_vaes:
             extra_bits = []
             if c_encoders:
-                extra_bits.append(f"<b>Text Encoder:</b> <code>{', '.join(c_encoders)}</code>")
+                extra_bits.append(f"<b>Text Encoder:</b> <code>{_esc(', '.join(str(x) for x in c_encoders))}</code>")
             if c_vaes:
-                extra_bits.append(f"<b>VAE:</b> <code>{', '.join(c_vaes)}</code>")
+                extra_bits.append(f"<b>VAE:</b> <code>{_esc(', '.join(str(x) for x in c_vaes))}</code>")
             extra_info = f"<div style='margin-top: 10px; font-size: 12px; color: #9ca3af;'>{' &nbsp;•&nbsp; '.join(extra_bits)}</div>"
 
         comfy_html = (
@@ -852,12 +864,12 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"<div style='padding: 16px; border-radius: 8px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1); margin-bottom: 16px;'>"
         f"<div style='display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px; margin-bottom: 12px;'>"
         f"<div>"
-        f"<div style='font-size: 18px; font-weight: bold; color: #f3f4f6;'>{filename}</div>"
+        f"<div style='font-size: 18px; font-weight: bold; color: #f3f4f6;'>{_esc(filename)}</div>"
         f"<div style='font-size: 12px; color: #6b7280; margin-top: 2px;'>{size} &nbsp;•&nbsp; {info.get('total_tensors', 0):,} tensors</div>"
         f"</div>"
         f"<div style='display: flex; gap: 8px; flex-wrap: wrap;'>"
-        f"<span style='background: #1e3a8a; color: #93c5fd; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{arch}</span>"
-        f"<span style='background: #312e81; color: #c7d2fe; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{prec}</span>"
+        f"<span style='background: #1e3a8a; color: #93c5fd; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(arch)}</span>"
+        f"<span style='background: #312e81; color: #c7d2fe; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(prec)}</span>"
         f"</div>"
         f"</div>"
         # Component Grid
@@ -871,7 +883,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         # Metadata Accordion
         f"<details style='margin-top: 16px; padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06);'>"
         f"<summary style='cursor: pointer; font-size: 13px; font-weight: 600; color: #9ca3af;'>View Raw Metadata (JSON - {len(raw_meta)} fields)</summary>"
-        f"<pre style='margin-top: 10px; padding: 12px; border-radius: 6px; background: #0b0f19; color: #a7f3d0; font-size: 12px; overflow-x: auto; max-height: 400px; border: 1px solid #1f2937;'>{meta_json_str}</pre>"
+        f"<pre style='margin-top: 10px; padding: 12px; border-radius: 6px; background: #0b0f19; color: #a7f3d0; font-size: 12px; overflow-x: auto; max-height: 400px; border: 1px solid #1f2937;'>{_esc(meta_json_str)}</pre>"
         f"</details>"
         f"</div>"
     )
