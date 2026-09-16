@@ -53,7 +53,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 - **Weighted Sum (`A * (1 - M) + B * M`)**: Smoothly blend two checkpoints using an intuitive multiplier slider.
 - **Add Difference (`A + (B - C) * M`)**: Extract unique stylistic or architectural differences between models B and C, and inject them into base model A.
-- **No Interpolation (Format Converter)**: Convert or re-quantize a single checkpoint without merging. Switch between FP16, BF16, FP8 (e4m3fn / e5m2), and INT8.
+- **No Interpolation (Format Converter)**: Use Model A only, without blending or applying the multiplier. Convert, re-quantize, or bake LoRAs into a single checkpoint.
 - **Instant Present-Only Badges & Architecture Detection**: Selecting Model A, B, or C immediately names the model family from the file's own tensor keys (Anima, Illustrious, Pony, SDXL, Flux, Wan, SD1.5, with a generic `DiT / Diffusion Model` fallback for anything newer) and **only displays the components actually present in the file** (`DiT/UNet`, `Text Encoder`, `VAE`, `LLM Adapter`), keeping the interface clean with zero false-alarm "Missing" clutter.
 - **Cross-Generation Anima Merging**: Anima's generations were each built by *inserting* new transformer blocks between the previous generation's (28 → 40 → 52), so a plain name-for-name merge lines up unrelated layers and yields noise. Merge Studio detects the block-count difference and remaps indices automatically, using Forge's own mapping tables — the same ones the LoRA path uses at generation time. Blocks that the expansion created have no counterpart in the older model and are kept at Model A's weights; the panel reports exactly how many were merged and how many were preserved.
 - **Inserted-Block Blend (`extend_ratio`)**: The blocks a newer Anima generation inserted have no counterpart in the older model, so by default they keep Model A's weights. Raising `extend_ratio` also blends in the block each one was originally copied from. **Set this close to the Multiplier when you plan to use LoRAs built for the older generation** — Forge remaps such LoRAs onto the inserted blocks as well, so leaving those blocks unblended means a LoRA delta landing on weights it was never trained against. Experimental, and `0.0` is the right default otherwise.
@@ -63,7 +63,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 
 ### 2. Save / Load Recipes
 
-- **Repeatable Bakes**: Store every setting on the merge tab — models, method, multiplier, `extend_ratio`, precisions per component, save mode, VAE choice, metadata options, and the full LoRA list with strengths — as a single JSON file, then reload it to repeat or tweak a bake.
+- **Repeatable Bakes**: Store every applicable setting on the merge tab — models, method, multiplier, `extend_ratio`, precisions per component, save mode, VAE choice, metadata options, and the full LoRA list with strengths — as a single JSON file, then reload it to repeat or tweak a bake. `No Interpolation` recipes omit the unused multiplier.
 - **Survives Reinstalls**: Recipes are written under the WebUI's data directory when Forge exposes one, so updating or reinstalling the extension doesn't lose them.
 - **Portable, and Honest About Gaps**: A recipe from another machine still loads. Fields naming a model or LoRA you don't have are left untouched rather than cleared, and the panel names exactly which ones were missing.
 
@@ -93,7 +93,8 @@ Inspects **any** model Forge loads, not just checkpoints. One dropdown lists the
   - Automatically reads WebUI merge recipes (`sd_merge_recipe`).
   - Mechanically extracts ComfyUI workflows and prompt graphs (`UNETLoader`, `CLIPLoader`, `VAELoader`, `LoraLoaderModelOnly`).
   - Displays original base models, parent SHA-256 hashes, merge methods, and ratios.
-- **Baked LoRA Discovery**: Lists any LoRAs previously baked into the checkpoint, along with bake weights and activation tags.
+- **Baked LoRA Discovery**: Lists LoRAs recorded in the checkpoint's embedded recipe, along with bake weights and any trigger declarations captured from the LoRAs themselves at bake time.
+- **Honest Merge Formulas**: Normalizes known method spellings and describes each operation accurately: `A` for No Interpolation, `A × (1 − M) + B × M` for Weighted Sum, and `A + M × (B − C)` for Add Difference. Unknown third-party method names are preserved without inventing a formula.
 - **Raw Metadata Viewer**: Interactive expandable viewer for all raw metadata keys.
 
 **LoRA inspection** answers what you actually need before baking one:
@@ -120,8 +121,11 @@ Inspects **any** model Forge loads, not just checkpoints. One dropdown lists the
 ### How to Merge Checkpoints
 
 1. Navigate to the **Merge Studio** tab and select the **Checkpoint Merge & Studio** sub-tab.
-2. Choose your **Primary Model (A)** and **Secondary Model (B)**. The real-time badge underneath will confirm their architectures and components.
-3. Select your **Interpolation Method** (e.g. *Weighted Sum*) and set the **Multiplier (M)**.
+2. Choose your **Primary Model (A)**. Add **Model B** for *Weighted Sum*, or **Models B and C** for *Add Difference*. The real-time badges underneath will confirm their architectures and components.
+3. Select the operation you need:
+   - **No Interpolation**: `A` only. No multiplier applies.
+   - **Weighted Sum**: `A × (1 − M) + B × M`; `M` is Model B's share.
+   - **Add Difference**: `A + M × (B − C)`; `M` scales the transplanted difference and is not a blend ratio.
 4. Set your desired output filename, target precision, and save mode (UNet Only or Full Checkpoint).
 5. Click **Merge / Process**.
 
@@ -199,7 +203,7 @@ The mapping was then confirmed numerically against the official base checkpoints
 
 ### Precision & Quantization
 
-- **Output formats**: FP16, BF16, FP8 (e4m3fn / e5m2), INT8 (tensor-wise single scale, or ConvRot per-channel + Hadamard rotation), NVFP4, and INT4 (ConvRot W4A4) — selectable independently for the diffusion model, text encoder, and VAE.
+- **Output formats**: FP16, BF16, FP8 (e4m3fn / e5m2), INT8 (tensor-wise single scale, or ConvRot per-channel + Hadamard rotation), NVFP4, and INT4 (ConvRot W4A4) — selectable independently for the diffusion model, text encoder, and VAE. `Same as source checkpoint` uses Model A's on-disk tensor dtypes, not Forge's temporary loaded precision.
 - **Readable inputs**: any plain FP16/BF16 checkpoint, plus Forge Neo's MixedPrecision family (`fp8_scaled`, `mxfp8`, `nvfp4`, `int8_convrot`, `convrot_w4a4`, and friends).
 
 ### Not Supported
