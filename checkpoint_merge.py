@@ -35,7 +35,7 @@ from lora_bake import (
 from checkpoint_inspector import load_custom_vae_state_dict
 import anima_remap
 from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
-from source_precision import match_source_dtypes
+from source_precision import try_match_source_dtypes
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
 INTERP_WEIGHTED_SUM = "weighted_sum"
@@ -670,11 +670,13 @@ def merge_checkpoints(
         if save_mode == "full" and not is_custom_vae and vae_output_format == "same":
             same_source_keys.update(vae_output_keys)
         if same_source_keys:
-            restored = match_source_dtypes(
+            restored, precision_warning = try_match_source_dtypes(
                 sd, primary_info.filename, same_source_keys, SAFETENSORS_FLOAT_DTYPES
             )
             if progress_cb and restored:
                 progress_cb(f"Restored source precision for {restored} tensor(s).")
+            if progress_cb and precision_warning:
+                progress_cb(precision_warning)
 
         sd = to_cpu_contiguous_state_dict(sd)
 

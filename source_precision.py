@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
@@ -38,3 +39,28 @@ def match_source_dtypes(
         state_dict[key] = tensor.to(target_dtype)
         changed += 1
     return changed
+
+
+def try_match_source_dtypes(
+    state_dict: MutableMapping[str, Any],
+    source_path: str,
+    keys: Iterable[str],
+    dtype_map: Mapping[str, Any],
+) -> tuple[int, str]:
+    """``match_source_dtypes``, but a source with no readable safetensors header
+    is reported instead of raised.
+
+    A ``.ckpt``/``.pt`` primary model has no header to read precision back from,
+    and neither does a file that moved mid-merge. That is a reason to leave the
+    tensors at the precision they already carry -- never a reason to discard a
+    merge that has already been fully computed.
+
+    Returns ``(tensors_changed, warning)``; ``warning`` is empty on success.
+    """
+    try:
+        return match_source_dtypes(state_dict, source_path, keys, dtype_map), ""
+    except Exception as e:
+        return 0, (
+            f"Could not read the source precision of {os.path.basename(source_path)} ({e}). "
+            f"Keeping the precision the tensors already have."
+        )

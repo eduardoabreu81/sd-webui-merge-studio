@@ -55,5 +55,48 @@ class SourcePrecisionTests(unittest.TestCase):
             self.assertIs(bf16, state_dict[key].dtype)
 
 
+class SourcePrecisionFallbackTests(unittest.TestCase):
+    """A source with no readable header must not destroy a finished merge."""
+
+    def test_non_safetensors_source_is_reported_not_raised(self):
+        from source_precision import try_match_source_dtypes
+
+        key = "model.diffusion_model.block.weight"
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "legacy.ckpt"
+            source.write_bytes(b"not a safetensors file")
+            state_dict = {key: object()}
+
+            changed, warning = try_match_source_dtypes(
+                state_dict, str(source), {key}, {}
+            )
+
+            self.assertEqual(0, changed)
+            self.assertIn("legacy.ckpt", warning)
+            self.assertIn("Keeping the precision", warning)
+
+    def test_missing_source_file_is_reported_not_raised(self):
+        from source_precision import try_match_source_dtypes
+
+        changed, warning = try_match_source_dtypes(
+            {}, "no-such-model.safetensors", set(), {}
+        )
+
+        self.assertEqual(0, changed)
+        self.assertIn("no-such-model.safetensors", warning)
+
+    def test_readable_source_reports_no_warning(self):
+        from source_precision import try_match_source_dtypes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "base.safetensors"
+            write_source_header(source, {"a.weight": "F16"})
+
+            changed, warning = try_match_source_dtypes({}, str(source), set(), {})
+
+            self.assertEqual(0, changed)
+            self.assertEqual("", warning)
+
+
 if __name__ == "__main__":
     unittest.main()

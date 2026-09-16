@@ -21,7 +21,7 @@ from modules import shared
 from aux_inspector import embedded_activation_text
 from checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
 from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
-from source_precision import match_source_dtypes
+from source_precision import try_match_source_dtypes
 
 
 class BakeError(RuntimeError):
@@ -360,11 +360,13 @@ def bake_lora_into_checkpoint(
         if save_full and not is_custom_vae and vae_output_format == "same":
             same_source_keys.update(vae_output_keys)
         if same_source_keys:
-            restored = match_source_dtypes(
+            restored, precision_warning = try_match_source_dtypes(
                 sd, checkpoint_path, same_source_keys, SAFETENSORS_FLOAT_DTYPES
             )
             if progress_cb and restored:
                 progress_cb(f"Restored source precision for {restored} tensor(s).")
+            if progress_cb and precision_warning:
+                progress_cb(precision_warning)
 
         sd = to_cpu_contiguous_state_dict(sd)
 
