@@ -58,7 +58,7 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Cross-Generation Anima Merging**: Anima's generations were each built by *inserting* new transformer blocks between the previous generation's (28 → 40 → 52), so a plain name-for-name merge lines up unrelated layers and yields noise. Merge Studio detects the block-count difference and remaps indices automatically, using Forge's own mapping tables — the same ones the LoRA path uses at generation time. Blocks that the expansion created have no counterpart in the older model and are kept at Model A's weights; the panel reports exactly how many were merged and how many were preserved.
 - **Inserted-Block Blend (`extend_ratio`)**: The blocks a newer Anima generation inserted have no counterpart in the older model, so by default they keep Model A's weights. Raising `extend_ratio` also blends in the block each one was originally copied from. **Set this close to the Multiplier when you plan to use LoRAs built for the older generation** — Forge remaps such LoRAs onto the inserted blocks as well, so leaving those blocks unblended means a LoRA delta landing on weights it was never trained against. Experimental, and `0.0` is the right default otherwise.
 - **Cross-Model Compatibility Protection**: Automatically warns if Model B or C belongs to an incompatible architecture family relative to Model A (e.g. attempting to mix Anima with SDXL or Flux), preventing corrupted merges both visually in the UI and via safety validation before engine loading.
-- **Per-Component Precision**: Target different datatypes for diffusion models, text encoders, and VAEs independently.
+- **Per-Component Precision**: Target different datatypes for diffusion models, text encoders, and VAEs independently. `Same as source checkpoint` restores each matching tensor to the dtype recorded in Model A's `.safetensors` header, so a BF16 base remains BF16 even if Forge loaded it as FP16 internally.
 - **Adaptive ConvRot Quantization**: Automatically selects optimal group sizes (256, 128, 64) for channel-sensitive architectures like SDXL and Illustrious to prevent shape mismatch crashes.
 
 ### 2. Save / Load Recipes
@@ -72,8 +72,8 @@ Standard checkpoint mergers only work with raw unquantized tensors (FP16/BF16). 
 - **Dynamic Slots & Per-Row Removal**: Start with 1 slot and add more as needed with **Add LoRA** (up to 10 simultaneous LoRAs). Each row features its own dedicated red **X** button to delete that specific LoRA and automatically compact the list, plus a **Clear All LoRAs** button.
 - **Native Forge Engine**: Uses Forge's native LoRA application pipeline (`networks.load_lora_for_models`) rather than external approximations, ensuring identical results to loading LoRAs at generation time — and, by the same token, supporting exactly the LoRA formats Forge Neo itself supports.
 - **Mismatched LoRAs Are Skipped, Not Forced**: If more than half of a LoRA's keys don't map onto the checkpoint, Forge declines to apply it and logs `LoRA mismatch` to the console. The bake still completes and writes a valid file — just without that LoRA — so check the console when a result looks unchanged.
-- **Preserved Trigger Words**: Activation text from LoRA metadata is automatically preserved in sidecar notes so you always know the required trigger words.
-- **Anima & DiT Smart Warnings**: Normalizes trigger words to lowercase spacing and warns if a LoRA contains LLM (Qwen3) adapter weights that could destabilize Anima checkpoints.
+- **Embedded Trigger Declarations**: When a LoRA declares `modelspec.trigger_phrase` inside its own `.safetensors` header, that exact value is preserved in the checkpoint's embedded merge recipe. External sidecar JSON files are neither read nor created.
+- **Anima & DiT Smart Warnings**: Warns if a LoRA contains LLM (Qwen3) adapter weights that could destabilize Anima checkpoints.
 
 ### 4. Custom VAE Baking and Stripping
 
@@ -98,7 +98,7 @@ Inspects **any** model Forge loads, not just checkpoints. One dropdown lists the
 
 **LoRA inspection** answers what you actually need before baking one:
 
-- **Trigger Word, Up Front**: Shows the activation text you must still type in the prompt — baking a LoRA never removes that need — or states plainly that none is required, which is the normal case for acceleration LoRAs.
+- **Trigger Declaration, Up Front**: Shows `modelspec.trigger_phrase` when the LoRA declares it in its own header. Otherwise it says that no trigger is declared in the file — never that no trigger is required, and never imports an adjacent JSON sidecar.
 - **Which Generation It Targets**: Reads the Anima generation (28 / 40 / 52 blocks) the same way Forge decides it at load time, and notes that Forge will remap it upward automatically. A LoRA built for another architecture is named as such (SD1.x / SDXL UNet, Flux, SD3) rather than reported as broken — a misfiled LoRA looks identical to a damaged one otherwise.
 - **LyCORIS as Well as LoRA**: Recognises LoHa, LoKr, OFT/BOFT and DoRA, which Forge applies through the same weight-adapter path and which therefore bake exactly like a plain LoRA.
 - **Rank and Coverage**: Uniform rank or per-layer adaptive, how many of its generation's blocks it touches, and which parts of each block (self-attention, cross-attention, MLP, modulation).

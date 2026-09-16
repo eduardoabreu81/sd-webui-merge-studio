@@ -30,13 +30,12 @@ from lora_bake import (
     _import_lora_networks,
     _lora_activation_text,
     _lora_touches_llm_adapter,
-    _normalize_activation_text,
     _pick_device,
-    _write_checkpoint_notes,
 )
 from checkpoint_inspector import load_custom_vae_state_dict
 import anima_remap
-from quant_utils import PLAIN_FORMATS, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from source_precision import match_source_dtypes
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
 INTERP_WEIGHTED_SUM = "weighted_sum"
@@ -124,16 +123,16 @@ def _build_metadata(
                 "extend_ratio": anima_remap.get("extend_ratio", 0.0),
             }
         if loras:
-            # activation_text travels inside the checkpoint, not just in the
-            # sidecar .json: baking a LoRA does not remove the need to type its
-            # trigger word, and a sidecar is easily lost when the file is moved
-            # or shared. The Inspector reads this field back.
+            # A trigger explicitly declared in the LoRA's safetensors header
+            # travels inside the checkpoint recipe. External sidecars are not
+            # consulted, so the recipe remains attributable to its input files.
             merge_recipe["baked_loras"] = [
                 {
                     "name": a["name"],
                     "strength": a["strength"],
                     "activation_text": a.get("activation_text", ""),
                     "activation_text_raw": a.get("activation_text_raw", ""),
+                    "activation_text_source": a.get("activation_text_source", ""),
                     "llm_adapter_warning": a["llm_adapter_warning"],
                 }
                 for a in loras
@@ -546,13 +545,14 @@ def merge_checkpoints(
                     progress_cb(f"WARNING: {os.path.basename(lora_path)} contains LLM adapter weights (Anima guidance says never to train these alongside a LoRA)")
 
                 unet, clip = networks.load_lora_for_models(unet, clip, lora_sd, strength, strength, filename=lora_path)
-                activation_text = _lora_activation_text(lora_path)
+                activation_text, activation_text_source = _lora_activation_text(lora_path)
                 applied_loras.append(
                     {
                         "name": os.path.basename(lora_path),
                         "strength": strength,
-                        "activation_text": _normalize_activation_text(activation_text, engine_a),
+                        "activation_text": activation_text,
                         "activation_text_raw": activation_text,
+                        "activation_text_source": activation_text_source,
                         "llm_adapter_warning": touches_llm_adapter,
                     }
                 )
@@ -602,17 +602,30 @@ def merge_checkpoints(
         unet_sd = utils.get_state_dict_after_quant(diffusion_a)
         unet_sd.update(unet_overrides)
 
-        sd = {}
-        sd.update(engine_a.model_config.process_unet_state_dict_for_saving(unet_sd))
+        processed_unet = fix_anima_state_dict_keys(
+            engine_a.model_config.process_unet_state_dict_for_saving(unet_sd)
+        )
+        sd = dict(processed_unet)
+        unet_output_keys = set(processed_unet)
+        clip_output_keys: set[str] = set()
+        vae_output_keys: set[str] = set()
         if save_mode == "full":
             if clip_a is not None:
                 clip_sd = utils.get_state_dict_after_quant(clip_a)
                 clip_sd.update(clip_overrides)
-                sd.update(engine_a.model_config.process_clip_state_dict_for_saving(clip_sd))
+                processed_clip = fix_anima_state_dict_keys(
+                    engine_a.model_config.process_clip_state_dict_for_saving(clip_sd)
+                )
+                llm_adapter_keys = {k for k in processed_clip if "llm_adapter" in k}
+                unet_output_keys.update(llm_adapter_keys)
+                clip_output_keys.update(set(processed_clip) - llm_adapter_keys)
+                sd.update(processed_clip)
             if not is_custom_vae and not strip_vae and vae_a is not None:
                 vae_sd = utils.get_state_dict_after_quant(vae_a)
                 vae_sd.update(vae_overrides)
-                sd.update(engine_a.model_config.process_vae_state_dict_for_saving(vae_sd))
+                processed_vae = engine_a.model_config.process_vae_state_dict_for_saving(vae_sd)
+                vae_output_keys.update(processed_vae)
+                sd.update(processed_vae)
         else:
             # For Anima, llm_adapter was moved into clip.cond_stage_model by loader.py,
             # but on disk it is part of Anima's DiT (model.diffusion_model.llm_adapter.*).
@@ -623,7 +636,9 @@ def merge_checkpoints(
                 for k, v in clip_sd.items():
                     if "llm_adapter" in k:
                         suffix = k[k.index("llm_adapter") :]
-                        sd[f"model.diffusion_model.{suffix}"] = _match_dtype(v, dit_dtype)
+                        output_key = f"model.diffusion_model.{suffix}"
+                        sd[output_key] = _match_dtype(v, dit_dtype)
+                        unet_output_keys.add(output_key)
 
         if is_custom_vae:
             if progress_cb:
@@ -646,6 +661,20 @@ def merge_checkpoints(
         if discard_regex:
             pattern = re.compile(discard_regex)
             sd = {k: v for k, v in sd.items() if not pattern.search(k)}
+
+        same_source_keys: set[str] = set()
+        if output_format == "same":
+            same_source_keys.update(unet_output_keys)
+        if save_mode == "full" and clip_output_format == "same":
+            same_source_keys.update(clip_output_keys)
+        if save_mode == "full" and not is_custom_vae and vae_output_format == "same":
+            same_source_keys.update(vae_output_keys)
+        if same_source_keys:
+            restored = match_source_dtypes(
+                sd, primary_info.filename, same_source_keys, SAFETENSORS_FLOAT_DTYPES
+            )
+            if progress_cb and restored:
+                progress_cb(f"Restored source precision for {restored} tensor(s).")
 
         sd = to_cpu_contiguous_state_dict(sd)
 
@@ -682,11 +711,6 @@ def merge_checkpoints(
         if progress_cb:
             progress_cb("Saving file...")
         save_checkpoint_file(sd, output_path, metadata=metadata)
-
-        if applied_loras:
-            reminders = [f"• {a['name']}: {a['activation_text']}" for a in applied_loras if a["activation_text"]]
-            if reminders:
-                _write_checkpoint_notes(output_path, "LoRA activation texts baked into this checkpoint:\n" + "\n".join(reminders))
 
         return {
             "output": output_path,

@@ -19,7 +19,7 @@ _llm_adapter_ratio).
 
 from __future__ import annotations
 
-import json
+import html
 import os
 import re
 import struct
@@ -260,30 +260,15 @@ def _llm_adapter_ratio(path: str, header: dict[str, Any], data_offset: int) -> f
     return llm_rms / main_rms
 
 
-def lora_activation_text(path: str) -> tuple[str, str]:
-    """(text, where it came from). Forge's own sidecar <name>.json wins, since
-    that is what the user typed in the Lora tab; a trainer's embedded
-    ss_output_name is a weak fallback and is labelled as such."""
-    try:
-        from modules import extra_networks
+def embedded_activation_text(metadata: dict[str, Any]) -> tuple[str, str]:
+    """Returns an explicitly declared trigger from the safetensors header.
 
-        text = (extra_networks.get_user_metadata(path).get("activation text") or "").strip()
-        if text:
-            return text, "sidecar"
-    except Exception:
-        pass
-
-    sidecar = os.path.splitext(path)[0] + ".json"
-    if os.path.exists(sidecar):
-        try:
-            with open(sidecar, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            text = (data.get("activation text") or "").strip()
-            if text:
-                return text, "sidecar"
-        except Exception:
-            pass
-    return "", ""
+    ModelSpec defines ``modelspec.trigger_phrase`` for this purpose.  Dataset
+    tags, output names, and Forge's adjacent ``<name>.json`` are deliberately
+    excluded: none of them is evidence contained in the selected file.
+    """
+    text = str(metadata.get("modelspec.trigger_phrase") or "").strip()
+    return (text, "modelspec.trigger_phrase") if text else ("", "")
 
 
 def _extraction_info(metadata: dict[str, Any]) -> dict[str, Any] | None:
@@ -328,7 +313,7 @@ def inspect_lora(filepath: str) -> dict[str, Any]:
     targets = _lora_targets(keys, blocks["prefix"], blocks["sep"])
     llm_keys = [k for k in keys if "llm_adapter" in k]
     ratio = _llm_adapter_ratio(filepath, header, data_offset) if llm_keys else None
-    text, text_source = lora_activation_text(filepath)
+    text, text_source = embedded_activation_text(metadata)
     name = os.path.basename(filepath)
 
     size = os.path.getsize(filepath)
@@ -548,27 +533,22 @@ def _activation_card(info: dict[str, Any]) -> str:
     """The one thing you have to act on, so it leads the card."""
     text = info.get("activation_text", "")
     if text:
+        safe_text = html.escape(str(text))
+        safe_source = html.escape(str(info.get("activation_text_source") or "embedded metadata"))
         return (
             f"<div style='{_CARD} border-color:{_AMBER}66; background:rgba(245,158,11,0.08);'>"
             f"<div style='color:{_AMBER}; font-weight:bold; font-size:12px; margin-bottom:6px;'>"
-            f"TRIGGER WORD REQUIRED IN THE PROMPT</div>"
-            f"<div style='font-family:monospace; font-size:14px; user-select:all;'>{text}</div>"
-            f"<div style='color:{_GREY}; font-size:11px; margin-top:6px;'>From the sidecar metadata. "
-            f"Baking this LoRA into a checkpoint does not remove the need to type it.</div></div>"
-        )
-    if info.get("is_turbo"):
-        return (
-            f"<div style='{_CARD}'><div style='color:{_GREEN}; font-weight:bold; font-size:12px;'>"
-            f"NO TRIGGER WORD</div><div style='color:{_GREY}; font-size:12px; margin-top:4px;'>"
-            f"Acceleration LoRAs change sampling behaviour rather than a concept keyed to a token, "
-            f"so they apply to every prompt.</div></div>"
+            f"TRIGGER DECLARED IN THIS FILE</div>"
+            f"<div style='font-family:monospace; font-size:14px; user-select:all;'>{safe_text}</div>"
+            f"<div style='color:{_GREY}; font-size:11px; margin-top:6px;'>"
+            f"Embedded metadata: <code>{safe_source}</code>. Baking the LoRA does not remove "
+            f"a trigger requirement declared by its author.</div></div>"
         )
     return (
         f"<div style='{_CARD}'><div style='color:{_GREY}; font-weight:bold; font-size:12px;'>"
-        f"NO TRIGGER WORD RECORDED</div><div style='color:{_GREY}; font-size:12px; margin-top:4px;'>"
-        f"Either this LoRA needs none, or none was set in the Lora tab's <i>Activation Text</i> field. "
-        f"Merge Studio reads that field, so filling it in there makes the trigger travel into any "
-        f"checkpoint you bake this LoRA into.</div></div>"
+        f"NO TRIGGER DECLARED IN THIS FILE</div><div style='color:{_GREY}; font-size:12px; margin-top:4px;'>"
+        f"The safetensors header has no <code>modelspec.trigger_phrase</code>. This does not prove "
+        f"that no trigger is needed; it means the file itself does not declare one.</div></div>"
     )
 
 

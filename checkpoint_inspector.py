@@ -12,6 +12,7 @@ Detects:
 from __future__ import annotations
 
 import json
+import html as html_lib
 import os
 import struct
 from typing import Any
@@ -708,10 +709,18 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         if baked_loras:
             lora_rows = ""
             for lora in baked_loras:
-                l_name = lora.get("name", "LoRA")
+                l_name = html_lib.escape(str(lora.get("name", "LoRA")))
                 l_str = lora.get("strength", 1.0)
                 l_trig = lora.get("activation_text", "")
-                trig_badge = f"<span style='background: rgba(249,115,22,0.15); color: #f97316; padding: 2px 6px; border-radius: 4px; font-size: 11px;'>trigger: {l_trig}</span>" if l_trig else ""
+                if l_trig:
+                    safe_trigger = html_lib.escape(str(l_trig))
+                    trig_badge = (
+                        f"<span title='Recorded in embedded merge recipe; not inferred from tensors' "
+                        f"style='background: rgba(249,115,22,0.15); color: #f97316; padding: 2px 6px; "
+                        f"border-radius: 4px; font-size: 11px;'>declared trigger: {safe_trigger}</span>"
+                    )
+                else:
+                    trig_badge = ""
                 lora_rows += (
                     f"<div style='display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 13px;'>"
                     f"<span><b>{l_name}</b> {trig_badge}</span>"
@@ -722,6 +731,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
                 f"<div style='margin-top: 14px;'>"
                 f"<div style='font-size: 12px; font-weight: 600; text-transform: uppercase; color: #9ca3af; margin-bottom: 6px;'>Baked LoRAs</div>"
                 f"<div style='border-radius: 6px; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.06); padding: 4px;'>{lora_rows}</div>"
+                f"<div style='color: #6b7280; font-size: 11px; margin-top: 5px;'>Trigger declarations shown here were recorded in embedded merge recipe metadata.</div>"
                 f"</div>"
             )
 

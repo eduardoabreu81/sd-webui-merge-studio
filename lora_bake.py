@@ -16,10 +16,12 @@ import torch
 
 from backend import memory_management, utils
 from backend.loader import forge_loader
-from modules import extra_networks, shared
+from modules import shared
 
-from checkpoint_inspector import load_custom_vae_state_dict
-from quant_utils import PLAIN_FORMATS, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, debug_print, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from aux_inspector import embedded_activation_text
+from checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
+from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
+from source_precision import match_source_dtypes
 
 
 class BakeError(RuntimeError):
@@ -43,31 +45,13 @@ def available_loras() -> dict[str, str]:
     return {name: net.filename for name, net in networks.available_networks.items()}
 
 
-def _lora_activation_text(lora_path: str) -> str:
-    """Trigger word(s) for this LoRA, if the user set them in the Lora tab's
-    metadata editor ("Activation Text" field). This lives in a sidecar
-    <lora_name>.json file, not in the LoRA's weight tensors -- baking the
-    LoRA does not remove the need to type this in the prompt, since the
-    baked weights still expect it exactly like the live LoRA did."""
+def _lora_activation_text(lora_path: str) -> tuple[str, str]:
+    """Return the trigger declaration embedded in the LoRA file itself."""
     try:
-        metadata = extra_networks.get_user_metadata(lora_path)
-        return (metadata.get("activation text") or "").strip()
+        header, _ = read_safetensors_header(lora_path)
+        return embedded_activation_text(header.get("__metadata__", {}) or {})
     except Exception:
-        return ""
-
-
-def _is_anima_engine(engine) -> bool:
-    return type(engine.model_config).__name__ == "Anima"
-
-
-def _normalize_activation_text(activation_text: str, engine) -> str:
-    """Anima's own training convention uses lowercase tags with spaces
-    instead of underscores (e.g. "hatsune miku", not raw Danbooru's
-    "hatsune_miku") -- normalize the reminder we embed so it actually
-    matches what the model was trained to expect in the prompt."""
-    if not activation_text or not _is_anima_engine(engine):
-        return activation_text
-    return activation_text.replace("_", " ").lower()
+        return "", ""
 
 
 # An llm_adapter block whose weights are this small relative to the LoRA's
@@ -136,25 +120,6 @@ def _lora_touches_llm_adapter(lora_sd: dict) -> bool:
     if main_rms == 0.0:
         return llm_rms > 0.0
     return (llm_rms / main_rms) > _LLM_ADAPTER_SIGNIFICANCE
-
-
-def _write_checkpoint_notes(output_path: str, notes: str) -> None:
-    """Writes a sidecar <output>.json with a Notes field, so the baked
-    checkpoint's activation-text reminder shows up in the Checkpoints tab
-    the same way it would for a LoRA."""
-    if not notes:
-        return
-    metadata_path = os.path.splitext(output_path)[0] + ".json"
-    try:
-        existing = {}
-        if os.path.exists(metadata_path):
-            with open(metadata_path, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-        existing["notes"] = (existing.get("notes", "") + "\n" + notes).strip()
-        with open(metadata_path, "w", encoding="utf-8") as f:
-            json.dump(existing, f, indent=4, ensure_ascii=False)
-    except Exception as e:
-        debug_print(f"Could not write sidecar metadata for {output_path}: {e}")
 
 
 def _sanitize_metadata(metadata: dict) -> dict[str, str]:
@@ -269,13 +234,14 @@ def bake_lora_into_checkpoint(
                 progress_cb(f"WARNING: {os.path.basename(lora_path)} contains LLM adapter weights (Anima guidance says never to train these alongside a LoRA)")
 
             unet, clip = networks.load_lora_for_models(unet, clip, lora_sd, strength, strength, filename=lora_path)
-            activation_text = _lora_activation_text(lora_path)
+            activation_text, activation_text_source = _lora_activation_text(lora_path)
             applied.append(
                 {
                     "name": os.path.basename(lora_path),
                     "strength": strength,
-                    "activation_text": _normalize_activation_text(activation_text, engine),
+                    "activation_text": activation_text,
                     "activation_text_raw": activation_text,
+                    "activation_text_source": activation_text_source,
                     "llm_adapter_warning": touches_llm_adapter,
                 }
             )
@@ -332,16 +298,29 @@ def bake_lora_into_checkpoint(
         unet_sd = utils.get_state_dict_after_quant(unet.model.diffusion_model)
         unet_sd.update(unet_overrides)
 
-        sd = {}
-        sd.update(engine.model_config.process_unet_state_dict_for_saving(unet_sd))
+        processed_unet = fix_anima_state_dict_keys(
+            engine.model_config.process_unet_state_dict_for_saving(unet_sd)
+        )
+        sd = dict(processed_unet)
+        unet_output_keys = set(processed_unet)
+        clip_output_keys: set[str] = set()
+        vae_output_keys: set[str] = set()
         if save_full:
             clip_sd = utils.get_state_dict_after_quant(clip.cond_stage_model)
             clip_sd.update(clip_overrides)
-            sd.update(engine.model_config.process_clip_state_dict_for_saving(clip_sd))
+            processed_clip = fix_anima_state_dict_keys(
+                engine.model_config.process_clip_state_dict_for_saving(clip_sd)
+            )
+            llm_adapter_keys = {k for k in processed_clip if "llm_adapter" in k}
+            unet_output_keys.update(llm_adapter_keys)
+            clip_output_keys.update(set(processed_clip) - llm_adapter_keys)
+            sd.update(processed_clip)
             if not is_custom_vae and not strip_vae and has_vae_model:
                 vae_sd = utils.get_state_dict_after_quant(engine.forge_objects.vae.first_stage_model)
                 vae_sd.update(vae_overrides)
-                sd.update(engine.model_config.process_vae_state_dict_for_saving(vae_sd))
+                processed_vae = engine.model_config.process_vae_state_dict_for_saving(vae_sd)
+                vae_output_keys.update(processed_vae)
+                sd.update(processed_vae)
         else:
             # For Anima, llm_adapter was moved into clip.cond_stage_model by loader.py,
             # but on disk it is part of Anima's DiT (model.diffusion_model.llm_adapter.*).
@@ -351,7 +330,9 @@ def bake_lora_into_checkpoint(
             for k, v in clip_sd.items():
                 if "llm_adapter" in k:
                     suffix = k[k.index("llm_adapter") :]
-                    sd[f"model.diffusion_model.{suffix}"] = _match_dtype(v, dit_dtype)
+                    output_key = f"model.diffusion_model.{suffix}"
+                    sd[output_key] = _match_dtype(v, dit_dtype)
+                    unet_output_keys.add(output_key)
 
         if is_custom_vae:
             if progress_cb:
@@ -370,6 +351,20 @@ def bake_lora_into_checkpoint(
                 prefix = "first_stage_model."
                 processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
             sd.update(processed_vae)
+
+        same_source_keys: set[str] = set()
+        if output_format == "same":
+            same_source_keys.update(unet_output_keys)
+        if save_full and clip_output_format == "same":
+            same_source_keys.update(clip_output_keys)
+        if save_full and not is_custom_vae and vae_output_format == "same":
+            same_source_keys.update(vae_output_keys)
+        if same_source_keys:
+            restored = match_source_dtypes(
+                sd, checkpoint_path, same_source_keys, SAFETENSORS_FLOAT_DTYPES
+            )
+            if progress_cb and restored:
+                progress_cb(f"Restored source precision for {restored} tensor(s).")
 
         sd = to_cpu_contiguous_state_dict(sd)
 
@@ -402,19 +397,6 @@ def bake_lora_into_checkpoint(
         if progress_cb:
             progress_cb("Saving file...")
         save_checkpoint_file(sd, output_path, metadata=metadata)
-
-        note_lines = []
-        for a in applied:
-            if a["activation_text"]:
-                line = f"LoRA '{a['name']}' (strength {a['strength']}) — activation text: {a['activation_text']}"
-                if a["activation_text"] != a["activation_text_raw"]:
-                    line += f" (normalized from '{a['activation_text_raw']}' to match Anima's tag convention)"
-                note_lines.append(line)
-            if a["llm_adapter_warning"]:
-                note_lines.append(f"WARNING: LoRA '{a['name']}' contains LLM adapter weights -- Anima's own training guidance says never to train these alongside a LoRA.")
-
-        if note_lines:
-            _write_checkpoint_notes(output_path, "Baked-in LoRA activation text(s), still required in the prompt:\n" + "\n".join(note_lines))
 
         return {
             "output": output_path,

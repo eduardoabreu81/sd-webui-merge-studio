@@ -21,6 +21,18 @@ from backend.operations_mixed_precision import _quantized_weight_state_dict
 from backend.quant_ops import QUANT_ALGOS, QuantizedTensor
 
 PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16}
+SAFETENSORS_FLOAT_DTYPES = {
+    "F64": torch.float64,
+    "F32": torch.float32,
+    "F16": torch.float16,
+    "BF16": torch.bfloat16,
+}
+for _dtype_name, _dtype_code in (
+    ("float8_e4m3fn", "F8_E4M3"),
+    ("float8_e5m2", "F8_E5M2"),
+):
+    if hasattr(torch, _dtype_name):
+        SAFETENSORS_FLOAT_DTYPES[_dtype_code] = getattr(torch, _dtype_name)
 
 
 class _Colors:
@@ -51,13 +63,7 @@ QUANT_FORMAT_VARIANTS: dict[str, tuple[str, dict]] = {
 # (label, output_format key) pairs shared by every UI tab that offers an
 # output-format choice.
 OUTPUT_FORMAT_CHOICES = [
-    # Not "same as the file on disk": this path writes each module back in the
-    # precision Forge loaded it in, which for a plain checkpoint is whatever
-    # Settings -> UNET storage dtype resolved to. A BF16 source loaded as FP16
-    # is therefore saved as FP16. It does round-trip a quantized checkpoint's
-    # own format exactly, which is the case it exists for. Pick an explicit
-    # format above to override.
-    ("Same as loaded (Forge's storage dtype)", "same"),
+    ("Same as source checkpoint", "same"),
     ("FP16 (no quantization)", "fp16"),
     ("BF16 (no quantization)", "bf16"),
     ("FP8 (e4m3fn)", "float8_e4m3fn"),
