@@ -4,7 +4,7 @@
 
 **Goal:** Build deterministic, architecture-aware replacement and embedding of modern text encoders and VAEs into self-contained Full Checkpoints.
 
-**Architecture:** A pure registry defines the component slots for each supported model family. Header inspection provides fast, conservative classification; Forge remains the runtime authority through an explicit `additional_state_dicts` preflight, and the final output must reload with an empty external-module list before it is reported as validated.
+**Architecture:** A Forge capability adapter derives component targets and serialization behavior from the loaded `model_config`; a small policy registry adds safe signatures, labels, support state, and provider overlays without copying Forge class names. Header inspection remains a fast provisional path, Forge preflight is authoritative, and the final output must reload with an empty external-module list plus any required provider-aware validation before it is reported as validated.
 
 **Tech Stack:** Python 3, `unittest`, PyTorch/Forge Neo runtime APIs, safetensors headers, Gradio.
 
@@ -18,6 +18,9 @@
 - SD1, SDXL, Illustrious, Pony, NoobAI, and Mugen preserve the existing traditional Full Checkpoint flow.
 - PiD is an i2i upscaler and must not appear in the modular component registry or modular UI.
 - Anima's LLM Adapter remains part of the diffusion model and must not become a replaceable text-encoder slot.
+- Existing Anima 28/40/52 cross-generation merge support is a regression baseline, not a feature to recreate or split into three architecture entries.
+- Anima 3.8B v1.1's bundled Semantic Connector v2 remains part of the diffusion model; its Qwen3.5 4B encoder is an additional conditional slot, while the legacy separate adapter is not a component slot.
+- Forge model-config class names must never be compatibility keys. Capability-equivalent renamed or future classes must continue to work without a registry edit.
 - `Same as component source` reads the selected component's own safetensors header, never Model A's header by proxy.
 - Missing source keys keep the dtype already produced by Forge; they are not guessed or force-cast.
 - The new path must not silently consume `shared.opts.forge_additional_modules`.
@@ -56,9 +59,11 @@ A failed audit produces a correction prompt for the same phase. The next phase i
 
 ### New production files
 
-- `component_registry.py`: immutable architecture, slot, prefix, support-state, and precision contracts.
+- `forge_capabilities.py`: normalized runtime capabilities derived from the actual Forge `model_config`, independent of class name.
+- `component_registry.py`: immutable policy overlays for known signatures, labels, support state, providers, and precision contracts.
+- `component_providers.py`: optional runtime/provider integration, initially the Anima 3.8B v1.1 Qwen3.5 overlay.
 - `component_bundle.py`: user selections, static validation, explicit Forge preflight, component precision, provenance, and final-output validation.
-- `component_ui.py`: pure conversion between registry/bundle contracts and the fixed Gradio component rows.
+- `component_ui.py`: pure conversion between capability/bundle contracts and a variable-length component-row model.
 - `component_recipes.py`: pure recipe v2 serialization, validation, and v1 migration.
 
 ### Existing production files
@@ -74,11 +79,13 @@ A failed audit produces a correction prompt for the same phase. The next phase i
 
 - `tests/safetensors_helpers.py`: tiny deterministic header/state-dict fixture writers.
 - `tests/test_component_registry.py`: matrix and invariant tests.
+- `tests/test_forge_capabilities.py`: capability discovery, class-renaming, future-model, and incomplete-contract tests.
 - `tests/test_component_signatures.py`: encoder, VAE, and storage classification tests.
 - `tests/test_modern_architecture_detection.py`: header and engine architecture resolution tests.
 - `tests/test_component_bundle.py`: selection, compatibility, ordering, and preflight tests.
 - `tests/test_component_precision.py`: per-source dtype and per-slot explicit conversion tests.
 - `tests/test_full_checkpoint_validation.py`: namespace, dtype, and independent reload tests.
+- `tests/test_component_providers.py`: provider activation and Anima 3.8B v1.1 validation tests.
 - `tests/test_component_ui.py`: pure UI state and control parsing tests.
 - `tests/test_component_recipes.py`: recipe v2 and v1 migration tests.
 
@@ -94,59 +101,83 @@ A failed audit produces a correction prompt for the same phase. The next phase i
 - Forge's `split_state_dict` applies the ordered `additional_state_dicts`, then resolves `clip_target`, VAE processing, and Anima LLM Adapter movement.
 - Forge model configs own `process_clip_state_dict_for_saving` and `process_vae_state_dict_for_saving`.
 - Forge's engine save path serializes diffusion model, clip, and VAE through those model-config methods.
+- `model_config.unet_config`, `huggingface_repo`, `clip_target`, key prefixes, `latent_format`, and save processors are the runtime capability surface. The implementation must inspect these values, not `type(model_config).__name__`.
+- Anima remapping already probes Forge's `networks.process_anima` before using local fallback tables; preserve that behavior.
 
 Reference sources:
 
 - `https://raw.githubusercontent.com/Haoming02/sd-webui-forge-classic/neo/backend/loader.py`
 - `https://raw.githubusercontent.com/Haoming02/sd-webui-forge-classic/neo/backend/diffusion_engine/base.py`
+- `https://raw.githubusercontent.com/Haoming02/sd-webui-forge-classic/neo/modules_forge/packages/huggingface_guess/detection.py`
+- `https://raw.githubusercontent.com/Haoming02/sd-webui-forge-classic/neo/modules_forge/packages/huggingface_guess/__init__.py`
 - `https://raw.githubusercontent.com/Haoming02/sd-webui-forge-classic/neo/modules_forge/packages/huggingface_guess/model_list.py`
+- `https://huggingface.co/Gazingstars123/Anima-2.9B`
+- `https://huggingface.co/lylogummy/Anima-3.8B`
+- `https://github.com/GumGum10/forge-anima-3.8B`
 
 ---
 
-### Task 1: Immutable architecture and slot registry
+### Task 1: Forge capability contract and policy overlays
 
 **Files:**
 
+- Create: `forge_capabilities.py`
 - Create: `component_registry.py`
+- Create: `tests/test_forge_capabilities.py`
 - Create: `tests/test_component_registry.py`
 
 **Interfaces:**
 
-- Produces: `SupportState`, `ComponentSlotSpec`, `ArchitectureSpec`, `ARCHITECTURES`, `get_architecture_spec(architecture_id)`, `modular_architecture_ids()`.
-- Consumes: no Forge, Gradio, or filesystem API.
+- Produces in `forge_capabilities.py`: `ForgeCapabilityError`, `ForgeComponentTarget`, `ForgeCapabilityProfile`, `capability_profile_from_engine(engine)` and `is_anima_profile(profile)`.
+- Produces in `component_registry.py`: `SupportState`, `ComponentSlotPolicy`, `ArchitecturePolicy`, `KNOWN_POLICIES`, `get_architecture_policy(architecture_id)`, and `apply_policy(profile, checkpoint_info=None)`.
+- Consumes only already-instantiated fake/real engine objects. It must not import Forge, Gradio, or touch the filesystem.
 
-- [ ] **Step 1: Write the failing registry tests**
+- [ ] **Step 1: Write failing capability-discovery tests**
 
-Create table-driven tests that assert the exact approved matrix and invariants:
+Build minimal fake engines whose model configs expose Forge's functional attributes. Do not name the fakes after current Forge classes.
 
 ```python
 import unittest
 
-from component_registry import SupportState, get_architecture_spec, modular_architecture_ids
+from forge_capabilities import capability_profile_from_engine
 
 
-class ComponentRegistryTests(unittest.TestCase):
-    def test_flux1_requires_two_encoders_and_flux_vae(self):
-        spec = get_architecture_spec("flux1")
-        self.assertIs(spec.support, SupportState.SUPPORTED)
+class ForgeCapabilityTests(unittest.TestCase):
+    def test_class_name_is_not_part_of_the_contract(self):
+        a = fake_engine(class_name="OldForgeName", image_model="flux", targets=("clip_l", "t5xxl"))
+        b = fake_engine(class_name="RenamedByForge", image_model="flux", targets=("clip_l", "t5xxl"))
         self.assertEqual(
-            ("clip_l", "t5xxl", "vae_flux"),
-            tuple(slot.slot_id for slot in spec.slots),
+            capability_profile_from_engine(a).semantic_fingerprint,
+            capability_profile_from_engine(b).semantic_fingerprint,
         )
-        self.assertTrue(all(slot.required for slot in spec.slots))
 
-    def test_experimental_families_are_explicit(self):
-        self.assertIs(get_architecture_spec("chroma").support, SupportState.EXPERIMENTAL)
-        self.assertIs(get_architecture_spec("ernie_image").support, SupportState.EXPERIMENTAL)
-
-    def test_pid_and_traditional_families_are_not_modular_entries(self):
-        ids = modular_architecture_ids()
-        self.assertNotIn("pid", ids)
-        self.assertNotIn("sdxl", ids)
-        self.assertNotIn("mugen", ids)
+    def test_future_complete_model_is_discovered_without_registry_entry(self):
+        engine = fake_engine(
+            class_name="NovaImageV7",
+            image_model="nova_image",
+            targets=("nova_text",),
+            text_prefix=("text_encoder.",),
+            vae_prefix=("vae.",),
+            with_save_processors=True,
+        )
+        profile = capability_profile_from_engine(engine)
+        self.assertEqual(("nova_text",), tuple(t.forge_target for t in profile.text_targets))
+        self.assertTrue(profile.generic_discovery)
 ```
 
-Add one assertion for every matrix row in the spec:
+Add adversarial tests proving:
+
+- missing `clip_target`, text prefixes, VAE evidence, or required save processors produces `ForgeCapabilityError` naming the missing capability;
+- the diagnostic fingerprint may include the class module/name, but the semantic fingerprint and compatibility decision do not;
+- callable and already-resolved/dict forms of `clip_target` are normalized safely;
+- `unet_config["image_model"] == "anima"` identifies Anima even if the class name changes;
+- Anima block counts 28, 40, and 52 all produce the same core Anima capability family;
+- SD/SDXL-like configs with no modern external targets return `not_applicable` rather than a fabricated modular profile;
+- no function imports Forge at module-import time.
+
+- [ ] **Step 2: Write failing policy-overlay tests**
+
+Keep the known UX matrix as policy, not runtime class mapping:
 
 ```python
 EXPECTED = {
@@ -164,68 +195,65 @@ EXPECTED = {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the red state**
+Assert the exact matrix, support states, and these invariants:
 
-Run: `python -m unittest tests.test_component_registry -v`
+- PiD, SDXL, Mugen, Illustrious, Pony, and NoobAI are not modular policies;
+- the Anima policy is one core entry, not separate 28/40/52 rows;
+- `anima_semantic_v2` is an overlay triggered only by bundle metadata or structural prefix evidence and adds `qwen35_4b` without replacing `qwen3_06b`;
+- the Semantic Connector prefix remains diffusion-owned;
+- the legacy 3.8B adapter has no slot;
+- a generic future Forge profile remains usable with generic labels when no local policy exists, provided later signature reconciliation succeeds.
 
-Expected: import failure because `component_registry.py` does not exist.
+- [ ] **Step 3: Run focused tests and verify the red state**
 
-- [ ] **Step 3: Implement the immutable registry**
+Run: `python -m unittest tests.test_forge_capabilities tests.test_component_registry -v`
 
-Use frozen dataclasses and string enums:
+Expected: import failures because the new modules do not exist.
+
+- [ ] **Step 4: Implement capability normalization and the small policy layer**
+
+Use frozen dataclasses and string enums. `ForgeCapabilityProfile` must contain normalized target IDs, internal prefixes, save-processor availability, VAE/latent evidence, semantic identity evidence, support applicability, and two fingerprints: diagnostic and semantic.
 
 ```python
-from dataclasses import dataclass
-from enum import Enum
-
-
-class SupportState(str, Enum):
-    SUPPORTED = "supported"
-    EXPERIMENTAL = "experimental"
-    NOT_APPLICABLE = "not_applicable"
-    UNKNOWN = "unknown"
-
-
 @dataclass(frozen=True)
-class ComponentSlotSpec:
-    slot_id: str
-    label: str
-    kind: str
-    accepted_signatures: tuple[str, ...]
+class ForgeComponentTarget:
+    forge_target: str
     internal_prefixes: tuple[str, ...]
-    saved_prefixes: tuple[str, ...]
-    required: bool = True
+    kind: str
 
 
 @dataclass(frozen=True)
-class ArchitectureSpec:
-    architecture_id: str
-    label: str
-    support: SupportState
-    forge_model_configs: tuple[str, ...]
-    slots: tuple[ComponentSlotSpec, ...]
+class ForgeCapabilityProfile:
+    family_hint: str
+    text_targets: tuple[ForgeComponentTarget, ...]
+    vae_target: ForgeComponentTarget | None
+    can_save_clip: bool
+    can_save_vae: bool
+    generic_discovery: bool
+    semantic_fingerprint: str
+    diagnostic_fingerprint: str
 ```
 
-Populate `ARCHITECTURES` with the exact `EXPECTED` matrix. Encoder slots accept only their matching signature. VAE slots accept only their matching VAE-family signature. Store Forge's internal role prefixes and final saved prefixes in the slot so later phases do not hard-code them in merge/UI code.
+`component_registry.py` may recognize stable semantic evidence such as `unet_config["image_model"]`, repository capability hints, target names, and checkpoint metadata. It must not contain a tuple/dict of Forge class names. Populate `KNOWN_POLICIES` with the exact `EXPECTED` matrix for known labels and signature restrictions.
 
-`get_architecture_spec()` must return `None` for unknown, PiD, and traditional IDs instead of manufacturing a modular spec.
+The policy layer may refine a capability profile but may never invent a target missing from Forge, except through an explicit provider overlay. Store provider ownership on such slots.
 
-- [ ] **Step 4: Run focused and full suites**
+- [ ] **Step 5: Run focused and full suites**
 
 Run:
 
 ```text
-python -m unittest tests.test_component_registry -v
+python -m unittest tests.test_forge_capabilities tests.test_component_registry -v
 python -m unittest discover -s tests -v
 ```
 
-Expected: registry tests pass; the full suite passes with at least 47 pre-existing tests plus the new registry tests.
+Expected: capability and policy tests pass; the full suite passes with at least 47 pre-existing tests plus the new tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```text
-git add component_registry.py tests/test_component_registry.py
-git commit -m "feat: add modern component registry"
+git add forge_capabilities.py component_registry.py tests/test_forge_capabilities.py tests/test_component_registry.py
+git commit -m "feat: discover forge component capabilities"
 ```
 
 ---
@@ -277,7 +305,9 @@ class ComponentSignatureTests(unittest.TestCase):
         self.assertEqual("umt5xxl", classify_component_header(header)["signature_id"])
 ```
 
-Add cases for `clip_l`, `qwen3_06b`, `qwen3_4b`, `qwen3_8b`, `qwen3vl_4b`, `qwen25vl_7b`, `gemma2_2b`, and `ministral3_3b`, using the key/shape decisions in Forge's `replace_state_dict`.
+Add cases for `clip_l`, `qwen3_06b`, `qwen3_4b`, `qwen3_8b`, `qwen35_4b`, `qwen3vl_4b`, `qwen25vl_7b`, `gemma2_2b`, and `ministral3_3b`, using the key/shape decisions in Forge's `replace_state_dict` and, for the provider-owned Qwen3.5 role, the companion runtime's loader contract.
+
+Add a negative fixture for the legacy `Anima-3.8B-expanded_adapter.safetensors`: it must be classified as an unsupported legacy adapter for this feature, never as a text encoder. Add a bundled-v2 fixture proving keys under `net.anima_v2_connector.` remain diffusion evidence rather than standalone component evidence.
 
 Add VAE cases that assert `latent_channels` from `decoder.conv_in.weight` and `video_capable` from temporal/video convolution markers. Add adversarial tests proving an encoder with `encoder.*` keys is not classified as a VAE.
 
@@ -321,19 +351,22 @@ git commit -m "feat: classify modern checkpoint components"
 
 ---
 
-### Task 3: Stable modern architecture resolution
+### Task 3: Stable header resolution and Anima regression bridge
 
 **Files:**
 
 - Create: `tests/test_modern_architecture_detection.py`
 - Modify: `checkpoint_inspector.py`
+- Modify: `anima_remap.py`
+- Modify: `forge_capabilities.py`
 - Modify: `component_registry.py`
 - Modify: `tests/test_component_registry.py`
 
 **Interfaces:**
 
-- Produces: `infer_architecture_id(header, filename="") -> str`, `architecture_id_from_engine(engine) -> str`, and `inspect_checkpoint(...)["architecture_id"]`.
+- Produces: `infer_architecture_id(header, filename="") -> str`, `capability_profile_from_engine(engine) -> ForgeCapabilityProfile`, and `inspect_checkpoint(...)["architecture_id"]` as a provisional UI hint only.
 - Produces: `inspect_checkpoint(...)["embedded_signatures"]` as a tuple/list of exact slot signature IDs evidenced in the file.
+- Changes: `is_anima_engine(engine)` delegates to Forge capability evidence rather than the model-config class name.
 - Keeps: existing human-readable `architecture` output and badge behavior.
 
 - [ ] **Step 1: Write failing architecture tests**
@@ -357,13 +390,22 @@ class ModernArchitectureDetectionTests(unittest.TestCase):
         self.assertEqual("anima", infer_architecture_id(header))
 ```
 
-Create small fake engines whose `type(engine.model_config).__name__` matches Forge model configs. Assert mappings for `Flux`, `Flux2K4B`, `Flux2K9B`, `WAN21_T2V`, `WAN21_I2V`, `QwenImage`, `Anima`, `Krea2`, `ZImage`, `Lumina2`, `Chroma`, and `ErnieImage`. Assert `SD15`, `SDXL`, `Mugen`, and `PiD` return `not_applicable`, not a modular registry ID.
+Reuse the capability-shaped fake engines from Task 1. Assert current known families resolve through structural capability evidence, not their Python class names. Rename every fake class and prove the result is unchanged. Assert SD15, SDXL, Mugen, and PiD return `not_applicable`, not a modular policy ID.
+
+Add explicit Anima regressions:
+
+- 28-, 40-, and 52-root-block headers all resolve to the same `anima` family while retaining their exact `block_count`;
+- `is_anima_engine` remains true after renaming the fake model-config class when `unet_config["image_model"] == "anima"`;
+- the current `_probe_target_to_source`/fallback behavior remains unchanged;
+- nested `llm_adapter.blocks.*` and `net.anima_v2_connector.semantic_resampler.blocks.*` never affect the root block count;
+- v2 metadata or connector prefix applies the semantic overlay without creating a fourth Anima architecture;
+- a generic 52-block model with no Anima structural evidence remains unknown.
 
 - [ ] **Step 2: Run the focused tests and verify red**
 
 Run: `python -m unittest tests.test_modern_architecture_detection -v`
 
-- [ ] **Step 3: Implement conservative header inference and authoritative engine mapping**
+- [ ] **Step 3: Implement conservative header inference and the capability bridge**
 
 Rules:
 
@@ -371,7 +413,9 @@ Rules:
 - Use encoder keys only to report embedded components, never to decide the diffusion architecture.
 - Filename evidence may refine an already-compatible family, but may not turn `unknown` into a supported architecture by itself.
 - Return `unknown` for ambiguous Flux/Flux2, Lumina/Z-Image, or generic DiT evidence rather than selecting the wrong slot matrix.
-- Runtime preflight always replaces the provisional header ID with `architecture_id_from_engine(engine)` and rejects disagreement.
+- Runtime preflight always replaces the provisional header decision with the capability-derived profile and rejects incompatible disagreement.
+- Do not add a class-name map. Delete the existing literal `type(engine.model_config).__name__ == "Anima"` check and route it through `is_anima_profile(capability_profile_from_engine(engine))`.
+- Preserve `ANIMA_BLOCK_SIZES = (28, 40, 52)`, Forge probing, fallback tables, and root-anchored exclusion exactly unless a failing regression test proves a necessary change.
 
 Add `architecture_id` and `embedded_signatures` to `inspect_checkpoint()` without changing existing fields.
 
@@ -387,8 +431,8 @@ python -m unittest discover -s tests -v
 - [ ] **Step 5: Commit**
 
 ```text
-git add checkpoint_inspector.py component_registry.py tests/test_modern_architecture_detection.py tests/test_component_registry.py
-git commit -m "feat: resolve modern model architectures"
+git add checkpoint_inspector.py anima_remap.py forge_capabilities.py component_registry.py tests/test_modern_architecture_detection.py tests/test_component_registry.py
+git commit -m "feat: resolve modern model capabilities"
 ```
 
 ---
@@ -402,7 +446,7 @@ git commit -m "feat: resolve modern model architectures"
 
 **Interfaces:**
 
-- Consumes: `ArchitectureSpec`, `inspect_module`, and checkpoint inspection dictionaries.
+- Consumes: provisional checkpoint inspection, `ArchitecturePolicy`, `ForgeCapabilityProfile` when available, provider overlays, and `inspect_module`.
 - Produces: `ComponentSelection`, `ResolvedComponent`, `ComponentPlan`, `ComponentValidationError`, and `build_component_plan(...)`.
 
 Use these stable contracts:
@@ -432,9 +476,11 @@ class ComponentPlan:
     support: SupportState
     components: tuple[ResolvedComponent, ...]
     additional_state_dicts: tuple[str, ...]
+    capability_fingerprint: str | None
+    required_providers: tuple[str, ...]
 ```
 
-`build_component_plan(architecture_id, primary_path, checkpoint_info, selections, inspect_fn=inspect_module) -> ComponentPlan` is pure apart from the injected inspector.
+`build_component_plan(architecture_id, primary_path, checkpoint_info, selections, capability_profile=None, inspect_fn=inspect_module) -> ComponentPlan` is pure apart from the injected inspector. A header-only plan is provisional and must be reconciled with the loaded profile in Task 5.
 
 - [ ] **Step 1: Write failing validation tests**
 
@@ -452,6 +498,10 @@ Cover:
 - deduplication of identical paths without hiding duplicate slot errors;
 - `unknown` and traditional architectures reject modular selections;
 - experimental plans retain `SupportState.EXPERIMENTAL`.
+- Anima 28/40/52 use the same core slots;
+- Anima 3.8B v1.1 v2 adds `qwen35_4b` after `qwen3_06b` and records the required provider;
+- a legacy Anima 3.8B adapter selection is rejected;
+- a future generic Forge target is accepted only after an authoritative capability profile exists and its selected file has a reconcilable signature;
 
 Example:
 
@@ -510,7 +560,7 @@ git commit -m "feat: validate explicit component plans"
 
 **Interfaces:**
 
-- Consumes: `ComponentPlan`, Forge's `forge_loader`, and `architecture_id_from_engine`.
+- Consumes: `ComponentPlan`, Forge's `forge_loader`, `capability_profile_from_engine`, and provider overlays.
 - Produces: `preflight_component_plan(primary_path, plan, loader=None) -> object` returning the loaded engine on success. `loader=None` performs a lazy Forge import inside the function.
 - Produces: `validate_loaded_components(engine, plan) -> None`.
 
@@ -538,6 +588,9 @@ class ComponentPreflightTests(unittest.TestCase):
 Add failures for:
 
 - provisional header architecture disagrees with loaded engine architecture;
+- a renamed capability-equivalent model-config class succeeds;
+- a complete future model config succeeds without a class-name registry entry;
+- an incomplete or drifted Forge capability contract fails with the diagnostic fingerprint and missing capability;
 - required encoder target missing after load;
 - VAE absent after load;
 - loader exception wrapped with architecture, slot files, and original exception text;
@@ -550,7 +603,9 @@ Run: `python -m unittest tests.test_component_bundle -v`
 
 - [ ] **Step 3: Implement preflight against Forge-owned targets**
 
-Validate `engine.model_config.clip_target` keys using the registry slot's internal prefixes/Forge target name. Validate `engine.forge_objects.clip` and `engine.forge_objects.vae` before returning.
+Derive a fresh `ForgeCapabilityProfile` from the loaded engine, reconcile it with the provisional policy/plan, then validate the normalized text targets and VAE target against `engine.forge_objects.clip` and `engine.forge_objects.vae`. Never dispatch from the Python class name.
+
+Provider-owned targets are validated through the provider contract rather than being falsely required in the core Forge `clip_target`. For Anima 3.8B v1.1, the core profile still owns Qwen3 0.6B and VAE; the semantic-v2 provider owns Qwen3.5 4B.
 
 Catch loader errors once and raise `ComponentValidationError` with contextual information. Preserve the original exception as `__cause__`.
 
@@ -598,6 +653,8 @@ Patch engine loading, `_merge_module_tree`, state-dict extraction, and file savi
 - engines B/C load without external modules on the modular path;
 - selected components are serialized from composed engine A through its `model_config`;
 - Anima LLM Adapter remains assigned to diffusion output precision/namespace;
+- Anima 28→40, 28→52, and 40→52 diffusion merges still invoke the existing remap translator and never remap nested LLM Adapter or Semantic Connector blocks;
+- all Anima generations share one component policy; only v2 evidence adds the provider-owned Qwen3.5 slot;
 - the traditional SDXL path still executes its pre-existing CLIP/VAE merge behavior;
 - `unet_only` ignores modular component controls;
 - the legacy `bake_vae` path remains available only to the traditional flow.
@@ -685,6 +742,8 @@ Add tests proving:
 - unsupported/quantized component output formats are rejected before merge;
 - embedded components use Model A only for that embedded slot;
 - Anima LLM Adapter follows diffusion precision, not Qwen precision;
+- Anima Qwen3 0.6B and Qwen3.5 4B preserve precision from their own physical files independently;
+- Semantic Connector v2 follows diffusion precision and is never captured by either encoder prefix;
 - provenance contains slot, basename, SHA-256, signature, source kind, physical source precision, requested output precision, and architecture support state.
 
 - [ ] **Step 2: Run focused tests and verify red**
@@ -746,14 +805,17 @@ git commit -m "feat: preserve component precision and provenance"
 
 **Files:**
 
+- Create: `component_providers.py`
 - Modify: `component_bundle.py`
 - Modify: `checkpoint_merge.py`
+- Create: `tests/test_component_providers.py`
 - Create: `tests/test_full_checkpoint_validation.py`
 
 **Interfaces:**
 
 - Produces: `OutputValidation(validated: bool, errors: tuple[str, ...], checked_slots: tuple[str, ...])`.
 - Produces: `validate_full_checkpoint_output(output_path, plan, loader=None) -> OutputValidation`. `loader=None` performs a lazy Forge import inside the function.
+- Produces: `ComponentProvider`, `provider_for(profile, checkpoint_info)`, and provider-specific `validate_embedded_output(...)` hooks.
 - Extends merge result with `validation` and `validated`.
 
 - [ ] **Step 1: Write failing output-validation tests**
@@ -768,6 +830,11 @@ Cover:
 - independent reload calls `loader(output_path, additional_state_dicts=[])` exactly;
 - reload failure preserves the output file and returns `validated=False`;
 - success requires header, slots, dtype, and reload checks all to pass.
+- a core Forge reload alone cannot validate Anima 3.8B v1.1 when the Qwen3.5 provider is absent;
+- the Anima semantic-v2 provider activates from bundle metadata/prefix evidence, not filename;
+- provider validation proves the embedded Qwen3.5 namespace is actually consumed by the active runtime bridge;
+- the legacy separate adapter never activates the provider;
+- a non-provider architecture is unaffected.
 
 Example:
 
@@ -793,6 +860,8 @@ Run: `python -m unittest tests.test_full_checkpoint_validation -v`
 
 Run validation immediately after `save_checkpoint_file`. Do not delete or overwrite a failed output. Return structured errors; do not reduce them to a boolean.
 
+Implement providers as a narrow optional protocol. The provider may adapt or verify the companion runtime, but it must not monkey-patch global Forge state silently. If the installed companion runtime exposes no supported embedded-Qwen3.5 consumption hook, fail closed with an actionable message and do not claim a self-contained Full Checkpoint.
+
 Traditional and UNet-only outputs retain their current completion semantics. Mandatory independent reload applies to the new modular Full path.
 
 - [ ] **Step 4: Run focused and full suites**
@@ -800,15 +869,15 @@ Traditional and UNet-only outputs retain their current completion semantics. Man
 Run:
 
 ```text
-python -m unittest tests.test_full_checkpoint_validation -v
+python -m unittest tests.test_component_providers tests.test_full_checkpoint_validation -v
 python -m unittest discover -s tests -v
 ```
 
 - [ ] **Step 5: Commit**
 
 ```text
-git add component_bundle.py checkpoint_merge.py tests/test_full_checkpoint_validation.py
-git commit -m "feat: validate full checkpoints after save"
+git add component_providers.py component_bundle.py checkpoint_merge.py tests/test_component_providers.py tests/test_full_checkpoint_validation.py
+git commit -m "feat: validate full checkpoints and providers"
 ```
 
 ---
@@ -824,15 +893,18 @@ git commit -m "feat: validate full checkpoints after save"
 **Interfaces:**
 
 - Produces: `ComponentRowState`, `build_component_rows(checkpoint_info, save_mode, module_infos)`, and `parse_component_rows(rows)`.
-- Uses three fixed Gradio rows because Flux 1 is the largest approved matrix: two text encoders plus one VAE.
-- Each row carries hidden `slot_id`, visible component selector, precision selector, and status HTML.
+- Produces a variable-length ordered row model from the resolved profile; slot count is not hard-coded to the current architecture matrix.
+- Each rendered row carries hidden `slot_id`, visible component selector, precision selector, provider badge when applicable, and status HTML.
 
 - [ ] **Step 1: Write failing pure UI-state tests**
 
 Assert:
 
 - Flux 1 shows `CLIP-L`, `T5XXL`, and `Flux AE` in registry order;
-- Anima shows only Qwen3 0.6B and Qwen Image VAE;
+- Anima 28/40 and non-v2 52-block checkpoints show Qwen3 0.6B and Qwen Image VAE;
+- Anima 3.8B v1.1 v2 shows Qwen3 0.6B, Qwen3.5 4B, and Qwen Image VAE, with provider status visible;
+- the legacy adapter is never offered in an encoder row;
+- an unknown header can request Forge capability resolution and then render generic discovered rows instead of remaining permanently stale;
 - an embedded option appears only when `embedded_signatures` proves it exists;
 - a missing required component defaults to `Not selected — required` and disables execution;
 - incompatible modules are absent from a row's choices;
@@ -859,17 +931,20 @@ COMPONENT_FORMAT_CHOICES = (
 )
 ```
 
-- [ ] **Step 4: Wire the fixed Gradio rows**
+- [ ] **Step 4: Wire capability-driven Gradio rows**
 
 In `create_merge_studio_tab()`:
 
-- add a `Full Checkpoint Components` group with three pre-created rows;
+- add a `Full Checkpoint Components` group rendered from the variable-length row state using the Gradio 4 dynamic-render API already required by this project;
 - refresh it when Model A, Save Mode, or module inventory changes;
+- use fast header policy for known families and an explicit cached Forge capability probe for unknown/new families; cache by checkpoint path, size, and mtime, and surface probe failures without guessing;
 - resolve module display names to physical paths using Forge's `main_entry.module_list`;
 - keep `Bake VAE`, global text-encoder format, and global VAE format visible only for the traditional path;
 - pass parsed modular selections to `merge_handler` and then `merge_checkpoints`;
 - prevent the handler from starting when a required modular row is unresolved;
 - never automatically select Forge global Additional Modules.
+
+Feature-detect the dynamic-render API at tab construction. If the installed Forge carries an incompatible Gradio build, disable only modular component composition with an actionable version/capability error; do not truncate the profile into a fixed number of rows.
 
 - [ ] **Step 5: Run focused and full suites**
 
@@ -958,6 +1033,9 @@ Add a concise README section covering:
 - independent reload validation;
 - unsupported storage formats;
 - PiD exclusion.
+- existing Anima 28/40/52 merge support versus the new component-composition layer;
+- Anima 3.8B v1.1's extra Qwen3.5/provider requirement and the exclusion of the legacy adapter;
+- Forge capability discovery for renamed/future model configs and its fail-closed boundary.
 
 - [ ] **Step 6: Run complete acceptance verification**
 
@@ -982,7 +1060,9 @@ git commit -m "feat: complete modular full checkpoint workflow"
 
 ## Final audit checklist
 
-- [ ] All approved architecture rows exist and have exact slots.
+- [ ] All known policy rows have exact slots without mirroring Forge class names.
+- [ ] A capability-equivalent renamed Forge class passes without a policy edit.
+- [ ] A future complete fake Forge model config is discovered generically; an incomplete one fails with an actionable reason.
 - [ ] Chroma and Ernie-Image are visibly experimental.
 - [ ] PiD exists in neither modular registry nor modular UI.
 - [ ] Traditional model behavior is covered by regression tests.
@@ -991,6 +1071,9 @@ git commit -m "feat: complete modular full checkpoint workflow"
 - [ ] External components never enter A/B/C interpolation.
 - [ ] Component precision is sourced per physical file and isolated by slot.
 - [ ] Anima LLM Adapter remains a diffusion-model concern.
+- [ ] Existing Anima 28/40/52 remapping remains green and uses one core component policy.
+- [ ] Anima 3.8B v1.1 adds Qwen3.5 only through the semantic-v2 provider overlay; its legacy adapter is never a slot.
+- [ ] Provider-owned components cannot be reported as validated from a core Forge reload alone.
 - [ ] Recipe provenance includes component hashes and is safely rendered.
 - [ ] Failed reload preserves the output and is never reported as success.
 - [ ] Successful modular Full output reopens with `additional_state_dicts=[]`.
