@@ -34,7 +34,8 @@ from lora_bake import (
 )
 from checkpoint_inspector import load_custom_vae_state_dict
 import anima_remap
-from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, _dominant_float_dtype, _match_dtype, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from precision_stats import dominant_float_dtype, match_dtype
 from source_precision import try_match_source_dtypes
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
@@ -632,12 +633,12 @@ def merge_checkpoints(
             # We must include it even in unet_only mode!
             if clip_a is not None:
                 clip_sd = utils.get_state_dict_after_quant(clip_a)
-                dit_dtype = _dominant_float_dtype(sd)
+                dit_dtype = dominant_float_dtype(sd)
                 for k, v in clip_sd.items():
                     if "llm_adapter" in k:
                         suffix = k[k.index("llm_adapter") :]
                         output_key = f"model.diffusion_model.{suffix}"
-                        sd[output_key] = _match_dtype(v, dit_dtype)
+                        sd[output_key] = match_dtype(v, dit_dtype)
                         unet_output_keys.add(output_key)
 
         if is_custom_vae:
