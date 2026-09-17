@@ -110,15 +110,82 @@ def get_model_family(arch: str) -> str:
 
 
 
-def _detect_precision(header: dict[str, Any]) -> str:
+# backend/quant_ops.py::QUANT_ALGOS keys, in the vocabulary the output-format
+# dropdown already uses. int8_tensorwise is listed twice because the rotation is
+# what distinguishes the two builds a user can choose between.
+_QUANT_FORMAT_LABELS = {
+    ("int8_tensorwise", True): "INT8 convrot",
+    ("int8_tensorwise", False): "INT8 tensor-wise",
+    ("float8_e4m3fn", False): "FP8 (e4m3fn)",
+    ("float8_e5m2", False): "FP8 (e5m2)",
+    ("nvfp4", False): "NVFP4",
+    ("mxfp8", False): "MXFP8",
+    ("convrot_w4a4", True): "INT4 convrot W4A4",
+    ("convrot_w4a4", False): "INT4 W4A4",
+    ("asym_w4a8_int8", False): "W4A8 asym INT8",
+}
+
+# Enough layers to notice a checkpoint quantized in more than one format,
+# without walking thousands of tiny reads over a network share.
+_QUANT_SAMPLE_LAYERS = 24
+
+
+def _read_quant_configs(
+    filepath: str, header: dict[str, Any], data_offset: int
+) -> set[tuple[str, bool]]:
+    """(format, uses convrot) for a sample of the quantized layers.
+
+    Each quantized layer carries a ``comfy_quant`` tensor that is not weights at
+    all: it is the JSON config Forge wrote for that layer, stored as uint8
+    (operations_mixed_precision.py:194). The header alone gives only its size,
+    so the rotation that separates "INT8 (convrot: per-channel + rotation)" from
+    plain tensor-wise INT8 -- two different entries in this extension's own
+    output-format dropdown -- is invisible until the bytes are read.
+    """
+    found: set[tuple[str, bool]] = set()
+    keys = [k for k in header if k.endswith(".comfy_quant")][:_QUANT_SAMPLE_LAYERS]
+    if not keys:
+        return found
+    try:
+        with open(filepath, "rb") as f:
+            for key in keys:
+                info = header.get(key)
+                if not isinstance(info, dict):
+                    continue
+                start, end = info["data_offsets"]
+                if end - start > 4096:
+                    continue
+                f.seek(data_offset + start)
+                conf = json.loads(f.read(end - start).decode("utf-8"))
+                fmt = conf.get("format")
+                if isinstance(fmt, str) and fmt:
+                    found.add((fmt, bool(conf.get("convrot"))))
+    except Exception:
+        # A config we cannot read is one we do not report; the dtype-based
+        # fallback still names the family.
+        return found
+    return found
+
+
+def _detect_precision(
+    header: dict[str, Any], filepath: str = "", data_offset: int = 0
+) -> str:
     # Check comfy_quant presence first
     has_comfy_quant = any(k.endswith(".comfy_quant") for k in header)
     if has_comfy_quant:
-        has_convrot = False
+        if filepath:
+            configs = _read_quant_configs(filepath, header, data_offset)
+            labels = sorted(
+                _QUANT_FORMAT_LABELS.get((fmt, convrot), fmt) for fmt, convrot in configs
+            )
+            if len(labels) == 1:
+                return f"{labels[0]} (comfy_quant)"
+            if labels:
+                return f"Mixed: {', '.join(labels)} (comfy_quant)"
+
         format_name = None
         for k in header:
             if k.endswith(".comfy_quant"):
-                # Header might not hold the json blob content, but let's check weight dtype
                 prefix = k[:-12]
                 w_info = header.get(f"{prefix}.weight")
                 if w_info and w_info.get("dtype") in ("I8", "U8"):
@@ -288,7 +355,7 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         }
 
     try:
-        header, _ = read_safetensors_header(filepath)
+        header, data_offset = read_safetensors_header(filepath)
     except Exception as e:
         return {"error": f"Failed to read header: {e}"}
 
@@ -341,7 +408,7 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
 
     filename = os.path.basename(filepath)
     arch = _detect_architecture(keys, has_llm_adapter, metadata=metadata, filename=filename)
-    precision = _detect_precision(header)
+    precision = _detect_precision(header, filepath, data_offset)
 
     # Parse sd_merge_recipe if present
     recipe = None
