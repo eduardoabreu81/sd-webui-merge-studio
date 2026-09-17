@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
 
-# Saved merge recipes (only used when Forge exposes no data dir)
+# Saved merge recipes
 recipes/

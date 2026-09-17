@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+import shutil
 import sys
 import traceback
 
@@ -466,12 +467,39 @@ _MODEL_SLOT_LABELS = {"primary": "Model A", "secondary": "Model B", "tertiary": 
 
 
 def _recipes_dir() -> str:
-    """Recipes live under the WebUI data dir when Forge exposes one, so they
-    survive reinstalling the extension; otherwise next to the extension."""
-    base = getattr(getattr(shared, "cmd_opts", None), "data_dir", None)
-    root = os.path.join(base, "merge_studio_recipes") if base else os.path.join(_EXT_ROOT, "recipes")
+    """Recipes live inside the extension, so everything Merge Studio owns sits
+    in one folder instead of leaving a merge_studio_recipes/ directory in the
+    Forge root."""
+    root = os.path.join(_EXT_ROOT, "recipes")
     os.makedirs(root, exist_ok=True)
+    _adopt_legacy_recipes(root)
     return root
+
+
+def _adopt_legacy_recipes(root: str) -> None:
+    """Copies recipes written to the old Forge-root location into the extension.
+
+    Copies rather than moves: an install that has not been updated yet still
+    reads the old folder, and losing a saved recipe to a path change is not a
+    reasonable trade for tidiness. Runs once -- a recipe already adopted is
+    never overwritten, so edits made here survive.
+    """
+    base = getattr(getattr(shared, "cmd_opts", None), "data_dir", None)
+    if not base:
+        return
+    legacy = os.path.join(base, "merge_studio_recipes")
+    if not os.path.isdir(legacy) or os.path.abspath(legacy) == os.path.abspath(root):
+        return
+    try:
+        for name in os.listdir(legacy):
+            if not name.endswith(".json"):
+                continue
+            target = os.path.join(root, name)
+            if os.path.exists(target):
+                continue
+            shutil.copy2(os.path.join(legacy, name), target)
+    except Exception as e:
+        debug_print(f"Could not adopt recipes from {legacy}: {e}")
 
 
 def _recipe_path(name: str) -> str:
