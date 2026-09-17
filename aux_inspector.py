@@ -347,7 +347,11 @@ def inspect_lora(filepath: str) -> dict[str, Any]:
         ),
         "activation_text": text,
         "activation_text_source": text_source,
-        "is_turbo": "turbo" in name.lower(),
+        # Named, not measured. An acceleration LoRA carries no tensor or
+        # header signature that separates it from any other: the official
+        # Turbo-ANIMA-v1.5 ships with an empty __metadata__, so the file
+        # name is the only evidence there is. The badge says so.
+        "turbo_in_name": "turbo" in name.lower(),
         "extraction": _extraction_info(metadata),
         "raw_metadata": metadata,
     }
@@ -595,8 +599,8 @@ def format_lora_dashboard_html(info: dict[str, Any]) -> str:
     else:
         badges = _badge("Unrecognised block layout", _GREY)
     badges += " " + _badge(info.get("precision", "?"), _GREY)
-    if info.get("is_turbo"):
-        badges += " " + _badge("Turbo", _AMBER)
+    if info.get("turbo_in_name"):
+        badges += " " + _badge("Turbo (by name)", _AMBER)
     if info.get("extraction"):
         badges += " " + _badge("Extracted", _BLUE)
 

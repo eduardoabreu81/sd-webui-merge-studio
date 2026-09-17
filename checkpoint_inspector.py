@@ -742,9 +742,18 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
                 l_str = lora.get("strength", 1.0)
                 l_trig = lora.get("activation_text", "")
                 if l_trig:
-                    safe_trigger = html_lib.escape(str(l_trig))
+                    safe_trigger = _esc(l_trig)
+                    # Where the trigger came from was already recorded per LoRA;
+                    # until now nothing read it back, so every trigger looked
+                    # equally sourced.
+                    origin = str(lora.get("activation_text_source") or "").strip()
+                    tooltip = (
+                        f"Recorded in the embedded merge recipe, from the LoRA's {origin}"
+                        if origin
+                        else "Recorded in the embedded merge recipe; not inferred from tensors"
+                    )
                     trig_badge = (
-                        f"<span title='Recorded in embedded merge recipe; not inferred from tensors' "
+                        f"<span title='{_esc(tooltip)}' "
                         f"style='background: rgba(249,115,22,0.15); color: #f97316; padding: 2px 6px; "
                         f"border-radius: 4px; font-size: 11px;'>declared trigger: {safe_trigger}</span>"
                     )

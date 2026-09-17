@@ -241,7 +241,6 @@ def bake_lora_into_checkpoint(
                     "name": os.path.basename(lora_path),
                     "strength": strength,
                     "activation_text": activation_text,
-                    "activation_text_raw": activation_text,
                     "activation_text_source": activation_text_source,
                     "llm_adapter_warning": touches_llm_adapter,
                 }

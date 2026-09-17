@@ -132,7 +132,6 @@ def _build_metadata(
                     "name": a["name"],
                     "strength": a["strength"],
                     "activation_text": a.get("activation_text", ""),
-                    "activation_text_raw": a.get("activation_text_raw", ""),
                     "activation_text_source": a.get("activation_text_source", ""),
                     "llm_adapter_warning": a["llm_adapter_warning"],
                 }
@@ -552,8 +551,7 @@ def merge_checkpoints(
                         "name": os.path.basename(lora_path),
                         "strength": strength,
                         "activation_text": activation_text,
-                        "activation_text_raw": activation_text,
-                        "activation_text_source": activation_text_source,
+                            "activation_text_source": activation_text_source,
                         "llm_adapter_warning": touches_llm_adapter,
                     }
                 )
