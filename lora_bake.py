@@ -20,7 +20,7 @@ from modules import shared
 
 from aux_inspector import embedded_activation_text
 from checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
-from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
+from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
 from precision_stats import dominant_float_dtype, match_dtype
 from source_precision import try_match_source_dtypes
 
@@ -274,6 +274,7 @@ def bake_lora_into_checkpoint(
                 clip.cond_stage_model,
                 clip_output_format,
                 progress_cb=(lambda i, total, name: progress_cb(f"Quantizing text encoder ({i}/{total}): {name}")) if progress_cb else None,
+                skip_names=LLM_ADAPTER_MODULE_NAMES,
             )
 
         is_custom_vae = bool(bake_vae and bake_vae not in ("original", "none", ""))
@@ -316,6 +317,11 @@ def bake_lora_into_checkpoint(
             unet_output_keys.update(llm_adapter_keys)
             clip_output_keys.update(set(processed_clip) - llm_adapter_keys)
             sd.update(processed_clip)
+            # The adapter rides along in the text encoder but belongs to the
+            # DiT, so it takes the DiT's precision, not the encoder's.
+            dit_dtype = dominant_float_dtype(processed_unet)
+            for k in llm_adapter_keys:
+                sd[k] = match_dtype(sd[k], dit_dtype)
             if not is_custom_vae and not strip_vae and has_vae_model:
                 vae_sd = utils.get_state_dict_after_quant(engine.forge_objects.vae.first_stage_model)
                 vae_sd.update(vae_overrides)

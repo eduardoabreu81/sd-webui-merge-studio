@@ -21,6 +21,15 @@ from backend.operations_mixed_precision import _quantized_weight_state_dict
 from backend.quant_ops import QUANT_ALGOS, QuantizedTensor
 
 PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16}
+
+# Anima's LLMAdapter is a submodule of the text encoder at runtime (loader.py
+# ::process_anima moves it there) but is part of the DiT on disk. Converting the
+# encoder must not reach into it: circlestone-labs' README is explicit that the
+# adapter "has an outsized influence on the generated images" and "is easy to
+# degrade", and the community's own INT8 build agrees in practice --
+# Anima-2.9B-preview-v1_int8_convrot quantizes 640 layers and leaves all 118 of
+# the adapter's tensors in plain BF16.
+LLM_ADAPTER_MODULE_NAMES = ("llm_adapter",)
 SAFETENSORS_FLOAT_DTYPES = {
     "F64": torch.float64,
     "F32": torch.float32,
@@ -199,10 +208,18 @@ def iter_quantizable_linears(root_module: nn.Module, min_features: int = DEFAULT
         yield name, module
 
 
-def convert_module_tree_precision(root_module: nn.Module, output_format: str, progress_cb=None) -> tuple[int, dict[str, torch.Tensor]]:
+def convert_module_tree_precision(
+    root_module: nn.Module,
+    output_format: str,
+    progress_cb=None,
+    skip_names: tuple[str, ...] = (),
+) -> tuple[int, dict[str, torch.Tensor]]:
     """Rewrites, in place, every eligible weight under root_module to
     output_format (a key of PLAIN_FORMATS, QUANT_ALGOS or
     QUANT_FORMAT_VARIANTS).
+
+    skip_names: module-path substrings to leave untouched, for a subtree that
+    belongs to a component this call is not converting.
 
     Returns (converted_count, state_dict_overrides). state_dict_overrides
     contains the correctly-serialized replacement entries (weight/scale/
@@ -225,6 +242,9 @@ def convert_module_tree_precision(root_module: nn.Module, output_format: str, pr
     invisible until you inspect the actual output file's dtypes."""
     already_quantized = [(n, m) for n, m in root_module.named_modules() if is_quantized(m)]
     targets = already_quantized if already_quantized else list(iter_quantizable_linears(root_module))
+    if skip_names:
+        # Applied after selection so it covers both branches above.
+        targets = [(n, m) for n, m in targets if not any(s in n for s in skip_names)]
 
     total = len(targets)
     overrides: dict[str, torch.Tensor] = {}

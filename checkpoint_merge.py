@@ -34,7 +34,7 @@ from lora_bake import (
 )
 from checkpoint_inspector import load_custom_vae_state_dict
 import anima_remap
-from quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from precision_stats import dominant_float_dtype, match_dtype
 from source_precision import try_match_source_dtypes
 
@@ -583,6 +583,7 @@ def merge_checkpoints(
             _, clip_overrides = convert_module_tree_precision(
                 clip_a, clip_output_format,
                 progress_cb=(lambda i, t, n: progress_cb(f"Quantizing text encoder ({i}/{t}): {n}")) if progress_cb else None,
+                skip_names=LLM_ADAPTER_MODULE_NAMES,
             )
 
         if save_mode == "full" and not is_custom_vae and not strip_vae and vae_output_format != "same" and vae_a is not None:
@@ -621,6 +622,11 @@ def merge_checkpoints(
                 unet_output_keys.update(llm_adapter_keys)
                 clip_output_keys.update(set(processed_clip) - llm_adapter_keys)
                 sd.update(processed_clip)
+                # The adapter rides along in the text encoder but belongs to the
+                # DiT, so it takes the DiT's precision, not the encoder's.
+                dit_dtype = dominant_float_dtype(processed_unet)
+                for k in llm_adapter_keys:
+                    sd[k] = match_dtype(sd[k], dit_dtype)
             if not is_custom_vae and not strip_vae and vae_a is not None:
                 vae_sd = utils.get_state_dict_after_quant(vae_a)
                 vae_sd.update(vae_overrides)
