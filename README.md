@@ -62,7 +62,7 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 
 - Save the complete merge setup as a JSON recipe.
 - Restore models, merge settings, precision choices, VAE options, and LoRA selections.
-- Keep recipes in Forge's data directory so they can survive extension updates.
+- Keep recipes inside the extension, in its own `recipes/` folder.
 - Load portable recipes even when some referenced files are not installed locally.
 
 ### 🔎 Model Recipe & Inspector
