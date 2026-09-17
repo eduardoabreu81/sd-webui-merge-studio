@@ -480,6 +480,23 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _architecture_label(info: dict[str, Any]) -> str:
+    """Architecture, with the Anima generation when there is one.
+
+    Anima ships in three depths -- 28 blocks (circlestone-labs/Anima), 40
+    (Anima-2.9B) and 52 (Anima-3.8B) -- and which one a file is decides whether
+    it can be merged and in which slot. The block count was already read and
+    used to guard merge order; it just never reached the badge, so all three
+    generations displayed identically. The LoRA inspector already labels its
+    own with "Anima <n>-block".
+    """
+    arch = str(info.get("architecture", "Unknown"))
+    blocks = info.get("block_count")
+    if get_model_family(arch) == "anima" and blocks:
+        return f"{arch}, {blocks}-block"
+    return arch
+
+
 def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any] | None = None) -> str:
     """Returns a compact HTML line with component badges for the merge studio tab."""
     if not info or "error" in info:
@@ -523,7 +540,7 @@ def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any
     html = (
         f"<div style='margin-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.5;'>"
         f"[{comp_str}] &nbsp;•&nbsp; "
-        f"<b>{arch}</b>{turbo_badge} &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
+        f"<b>{_architecture_label(info)}</b>{turbo_badge} &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
         f"</div>"
     )
 
@@ -868,7 +885,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"<div style='font-size: 12px; color: #6b7280; margin-top: 2px;'>{size} &nbsp;•&nbsp; {info.get('total_tensors', 0):,} tensors</div>"
         f"</div>"
         f"<div style='display: flex; gap: 8px; flex-wrap: wrap;'>"
-        f"<span style='background: #1e3a8a; color: #93c5fd; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(arch)}</span>"
+        f"<span style='background: #1e3a8a; color: #93c5fd; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(_architecture_label(info))}</span>"
         f"<span style='background: #312e81; color: #c7d2fe; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(prec)}</span>"
         f"</div>"
         f"</div>"
