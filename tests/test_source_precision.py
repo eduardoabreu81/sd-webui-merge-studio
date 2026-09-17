@@ -98,5 +98,112 @@ class SourcePrecisionFallbackTests(unittest.TestCase):
             self.assertEqual("", warning)
 
 
+class DiffusionPrefixMatchingTests(unittest.TestCase):
+    """The diffusion model does not ship under one prefix.
+
+    Measured on the official Anima releases: anima-base-v1.0 and the previews
+    ship as "net.", while anima-aesthetic and anima-turbo ship as
+    "model.diffusion_model.". The save path always writes the latter, so exact
+    key matching silently restored nothing for the whole Base line.
+    """
+
+    def _dtypes(self):
+        class FakeDtype:
+            def __init__(self, name):
+                self.name = name
+                self.is_floating_point = True
+
+        class FakeTensor:
+            def __init__(self, dtype):
+                self.dtype = dtype
+
+            def to(self, dtype):
+                return FakeTensor(dtype)
+
+        return FakeDtype, FakeTensor
+
+    def test_net_prefixed_source_matches_saved_diffusion_keys(self):
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "base.safetensors"
+            write_source_header(source, {"net.blocks.0.mlp.weight": "BF16"})
+            state_dict = {"model.diffusion_model.blocks.0.mlp.weight": FakeTensor(fp16)}
+
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"BF16": bf16}
+            )
+
+            self.assertEqual(1, changed)
+            self.assertIs(bf16, state_dict["model.diffusion_model.blocks.0.mlp.weight"].dtype)
+
+    def test_other_components_do_not_match_a_diffusion_key(self):
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "base.safetensors"
+            write_source_header(source, {"net.blocks.0.mlp.weight": "BF16"})
+            # Same suffix, different component: must not borrow the DiT's dtype.
+            state_dict = {"vae.blocks.0.mlp.weight": FakeTensor(fp16)}
+
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"BF16": bf16}
+            )
+
+            self.assertEqual(0, changed)
+            self.assertIs(fp16, state_dict["vae.blocks.0.mlp.weight"].dtype)
+
+    def test_a_name_two_source_keys_share_is_dropped_not_guessed(self):
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "both.safetensors"
+            write_source_header(
+                source,
+                {
+                    "net.blocks.0.mlp.weight": "BF16",
+                    "model.diffusion_model.blocks.0.mlp.weight": "F32",
+                },
+            )
+            state_dict = {"model.diffusion_model.blocks.0.mlp.weight": FakeTensor(fp16)}
+
+            # The exact key is present, so it wins outright and nothing is guessed.
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"F32": bf16}
+            )
+
+            self.assertEqual(1, changed)
+
+    def test_ambiguous_stripped_name_is_not_used_as_a_fallback(self):
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "both.safetensors"
+            write_source_header(
+                source,
+                {
+                    "net.blocks.0.mlp.weight": "BF16",
+                    "model.diffusion_model.blocks.0.mlp.weight": "BF16",
+                },
+            )
+            # No exact match, and the stripped name maps to two source tensors.
+            state_dict = {"blocks.0.mlp.weight": FakeTensor(fp16)}
+
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"BF16": bf16}
+            )
+
+            self.assertEqual(0, changed)
+            self.assertIs(fp16, state_dict["blocks.0.mlp.weight"].dtype)
+
+
 if __name__ == "__main__":
     unittest.main()
