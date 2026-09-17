@@ -147,7 +147,8 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "base.safetensors"
             write_source_header(source, {"net.blocks.0.mlp.weight": "BF16"})
-            # Same suffix, different component: must not borrow the DiT's dtype.
+            # Same trailing name, different component: a dtype must not cross
+            # from the diffusion model into the autoencoder.
             state_dict = {"vae.blocks.0.mlp.weight": FakeTensor(fp16)}
 
             changed = match_source_dtypes(
@@ -156,6 +157,42 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
 
             self.assertEqual(0, changed)
             self.assertIs(fp16, state_dict["vae.blocks.0.mlp.weight"].dtype)
+
+    def test_first_stage_model_source_matches_saved_vae_keys(self):
+        """Mugen accepts both autoencoder prefixes on load but saves "vae.",
+        and Chroma renames "first_stage_model." to "vae." on load. Either way
+        the source header and the output disagree on the prefix."""
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "mugen.safetensors"
+            write_source_header(source, {"first_stage_model.decoder.conv_in.weight": "BF16"})
+            state_dict = {"vae.decoder.conv_in.weight": FakeTensor(fp16)}
+
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"BF16": bf16}
+            )
+
+            self.assertEqual(1, changed)
+            self.assertIs(bf16, state_dict["vae.decoder.conv_in.weight"].dtype)
+
+    def test_a_vae_key_does_not_borrow_from_the_diffusion_model(self):
+        from source_precision import match_source_dtypes
+
+        FakeDtype, FakeTensor = self._dtypes()
+        fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "mixed.safetensors"
+            write_source_header(source, {"first_stage_model.decoder.conv_in.weight": "BF16"})
+            state_dict = {"model.diffusion_model.decoder.conv_in.weight": FakeTensor(fp16)}
+
+            changed = match_source_dtypes(
+                state_dict, str(source), set(state_dict), {"BF16": bf16}
+            )
+
+            self.assertEqual(0, changed)
 
     def test_a_name_two_source_keys_share_is_dropped_not_guessed(self):
         from source_precision import match_source_dtypes
