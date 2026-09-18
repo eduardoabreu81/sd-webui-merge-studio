@@ -396,7 +396,7 @@ git commit -m "feat: discover forge component capabilities"
 - Produces: `classify_component_header(header) -> dict`, `detect_unsupported_storage(header, filepath) -> str | None`, and extended `inspect_module(filepath)` results.
 - `inspect_module()` adds `signature_id`, `latent_channels`, `video_capable`, `storage_kind`, and `supported_storage` without removing its existing keys.
 
-- [ ] **Step 1: Add deterministic safetensors fixture helpers**
+- [x] **Step 1: Add deterministic safetensors fixture helpers**
 
 Implement:
 
@@ -407,7 +407,7 @@ def write_safetensors_header(path, tensors, metadata=None):
 
 The helper calculates byte offsets from dtype widths and writes zero payload bytes. It must support `F16`, `BF16`, `F32`, `I8`, and `U8` because storage-rejection tests need integer metadata tensors.
 
-- [ ] **Step 2: Write failing signature and rejection tests**
+- [x] **Step 2: Write failing signature and rejection tests**
 
 Cover all encoder signatures with the same discriminator Forge uses:
 
@@ -481,7 +481,7 @@ A `.pt` path must be rejected before header classification.
 `animaLLMLayerwiseFP8_v1.safetensors` as the case: its name says FP8 and its 310 tensors are
 entirely F16. Classification must report F16.
 
-- [ ] **Step 3: Run the focused test and confirm classification failures**
+- [x] **Step 3: Run the focused test and confirm classification failures**
 
 Run:
 
@@ -492,7 +492,7 @@ python -m unittest discover -s tests -p "test_aux_inspector.py" -v
 
 Expected: failure because the new public classifier and fields are absent; existing LoRA tests continue to import.
 
-- [ ] **Step 4: Implement ordered classification**
+- [x] **Step 4: Implement ordered classification**
 
 Implement classification in this order:
 
@@ -506,7 +506,7 @@ Implement classification in this order:
 
 Do not use filename keywords as component evidence. Change the current generic `encoder.`/`decoder.` VAE branch so it runs only after encoder signatures have been excluded.
 
-- [ ] **Step 5: Run focused and full suites**
+- [x] **Step 5: Run focused and full suites**
 
 Run:
 
@@ -516,7 +516,7 @@ python -m unittest discover -s tests -p "test_aux_inspector.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add aux_inspector.py tests/safetensors_helpers.py tests/test_component_signatures.py tests/test_aux_inspector.py
