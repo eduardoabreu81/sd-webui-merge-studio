@@ -128,6 +128,44 @@ SUPPORTED_FAMILIES = frozenset(
 EXPERIMENTAL_FAMILIES = frozenset({"chroma", "ernie"})
 
 
+#: Which autoencoder an architecture's latent space needs, keyed by the
+#: `latent_format` Forge itself declares. This is capability, not identity:
+#: the latent format is what actually decides whether a VAE can decode the
+#: model's output, and an unlisted format simply does not filter rather than
+#: guessing.
+#:
+#: The traits are measured. The Qwen-Image, Wan and Anima autoencoder uses 3D
+#: convolution; the Flux AE and the SD/SDXL VAE are 2D and differ only in
+#: latent channel count -- 16 against 4. Latent channels alone do not separate
+#: Flux from Qwen-Image, since both are 16.
+VAE_TRAITS_BY_LATENT_FORMAT: dict[str, dict] = {
+    "Wan21": {"video_capable": True},
+    "Flux": {"video_capable": False, "latent_channels": 16},
+    "SDXL": {"video_capable": False, "latent_channels": 4},
+    "SD15": {"video_capable": False, "latent_channels": 4},
+}
+
+
+def vae_fits_latent_format(module_info, latent_format_name: str) -> bool:
+    """Whether this autoencoder can serve that latent space.
+
+    Offering a Flux AE for an Anima checkpoint builds a file that only fails at
+    the post-save reload, several gigabytes later. An unknown latent format
+    accepts anything: better to allow a combination that turns out wrong than
+    to hide the only VAE a new architecture can use.
+    """
+    traits = VAE_TRAITS_BY_LATENT_FORMAT.get(latent_format_name)
+    if not traits:
+        return True
+    for key, expected in traits.items():
+        actual = module_info.get(key)
+        if actual is None:
+            continue
+        if actual != expected:
+            return False
+    return True
+
+
 def get_slot_policy(forge_target: str) -> ComponentSlotPolicy:
     """Policy for a role, inventing a usable generic one when unknown.
 
