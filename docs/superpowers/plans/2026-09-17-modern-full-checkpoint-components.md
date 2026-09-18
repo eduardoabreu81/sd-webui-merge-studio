@@ -552,7 +552,7 @@ git commit -m "feat: classify modern checkpoint components"
 - Changes: `is_anima_engine(engine)` delegates to Forge capability evidence rather than the model-config class name.
 - Keeps: existing human-readable `architecture` output and badge behavior.
 
-- [ ] **Step 1: Write failing architecture tests**
+- [x] **Step 1: Write failing architecture tests**
 
 Use header fixtures for every modular family and explicit negative cases:
 
@@ -622,11 +622,11 @@ inside the official files: Anima-2.9B's `expand_manifest.json` carries the `(28,
 **match exactly**. Reading the map from metadata when present, falling back to the table when
 absent, would let a future Anima expansion work without a code edit.
 
-- [ ] **Step 2: Run the focused tests and verify red**
+- [x] **Step 2: Run the focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_modern_architecture_detection.py" -v`
 
-- [ ] **Step 3: Implement conservative header inference and the capability bridge**
+- [x] **Step 3: Implement conservative header inference and the capability bridge**
 
 Rules:
 
@@ -649,7 +649,7 @@ Add `architecture_id` and `embedded_components` to `inspect_checkpoint()`, and r
 `checkpoint_inspector.py` itself uses it at two render sites, and
 `tests/test_dashboard_escaping.py` may touch it.
 
-- [ ] **Step 4: Run focused regression tests**
+- [x] **Step 4: Run focused regression tests**
 
 Run:
 
@@ -660,7 +660,7 @@ python -m unittest discover -s tests -p "test_llm_adapter_precision.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add checkpoint_inspector.py anima_remap.py checkpoint_merge.py lora_bake.py forge_capabilities.py component_registry.py tests/test_modern_architecture_detection.py tests/test_component_registry.py
