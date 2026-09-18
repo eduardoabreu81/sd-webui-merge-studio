@@ -1358,7 +1358,7 @@ git commit -m "feat: add full checkpoint component selectors"
 - Recipe v2 adds top-level `components` entries with `slot_id`, source kind, installed module name/path reference, and output format.
 - Keeps: recipe v1 loading and all existing LoRA fields.
 
-- [ ] **Step 1: Write failing recipe and rendering tests**
+- [x] **Step 1: Write failing recipe and rendering tests**
 
 Cover:
 
@@ -1370,7 +1370,7 @@ Cover:
 - component provenance shown by the checkpoint dashboard is labeled as recipe provenance, not fresh inference;
 - every component filename, slot label, precision, and error is HTML-escaped.
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run:
 
@@ -1380,13 +1380,13 @@ python -m unittest discover -s tests -p "test_checkpoint_recipe.py" -v
 python -m unittest discover -s tests -p "test_dashboard_escaping.py" -v
 ```
 
-- [ ] **Step 3: Implement recipe v2 and migration**
+- [x] **Step 3: Implement recipe v2 and migration**
 
 Keep `RECIPE_FIELDS` backward-compatible for scalar controls. Implement serialization and migration in `component_recipes.py`, which must not import Gradio or Forge. Store modular rows in the top-level `components` list rather than adding a variable number of positional Gradio fields to `settings`.
 
 On load, validate installed module names against the current Forge module inventory. Missing files remain `Not selected — required` and are included in the warning summary.
 
-- [ ] **Step 4: Implement completion messaging**
+- [x] **Step 4: Implement completion messaging**
 
 The merge handler must:
 
@@ -1396,7 +1396,7 @@ The merge handler must:
 - show an `Experimental architecture` warning for Chroma and Ernie-Image;
 - keep the saved file path visible in both validated and non-validated outcomes.
 
-- [ ] **Step 5: Document the user workflow**
+- [x] **Step 5: Document the user workflow**
 
 Documentation is a first-class deliverable of this work, not a footnote. Write it **after**
 the behaviour is implemented and tested, and lead with the walkthrough rather than the rules
@@ -1419,7 +1419,7 @@ Add a README section covering:
 - existing Anima 28/40/52 merge support versus the new component layer;
 - that Anima uses `qwen3_06b` for every generation, and that Qwen3.5 4B is not embeddable.
 
-- [ ] **Step 6: Run complete acceptance verification**
+- [x] **Step 6: Run complete acceptance verification**
 
 Run:
 
@@ -1442,7 +1442,7 @@ whose components sit under a foreign namespace, clear Additional Modules entirel
 load it. If it fails to generate, the whole feature is justified and the reload-based
 validation is proven necessary.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 git add component_recipes.py scripts/merge_studio_ui.py checkpoint_inspector.py README.md tests/test_component_recipes.py tests/test_checkpoint_recipe.py tests/test_dashboard_escaping.py
@@ -1453,32 +1453,46 @@ git commit -m "feat: complete modular full checkpoint workflow"
 
 ## Final audit checklist
 
-- [ ] The slot list comes from Forge's `clip_target`; the registry contains no per-architecture slot matrix.
-- [ ] No Forge class name appears as a compatibility key anywhere, including the two former `"SDXL" in type(...).__name__` fallbacks.
-- [ ] A capability-equivalent renamed Forge class passes without a policy edit.
-- [ ] A future complete fake Forge model config is discovered generically; an incomplete one fails with an actionable reason.
-- [ ] The presence of `process_*_state_dict_for_saving` is never used as a gate.
-- [ ] Chroma and Ernie-Image are visibly experimental.
-- [ ] PiD is excluded by `latent_format == RGB`, not by name.
-- [ ] SD15 and SDXL keep a VAE slot; they are not excluded from AIO.
-- [ ] Traditional model behavior is covered by regression tests.
-- [ ] Only `.safetensors` component sources are accepted.
-- [ ] `fp8_scaled` and `fp8_mixed` encoders are accepted and copied bit-exact; `weight_scale` and U8 tensors are untouched.
-- [ ] No AIO load reads global Additional Modules, and nothing is auto-filled.
-- [ ] External components never enter A/B/C interpolation.
-- [ ] Component precision is sourced per physical file and isolated by slot.
-- [ ] Anima LLM Adapter is saved into the diffusion namespace at the DiT dtype, even when the encoder slot is filled from an external file.
-- [ ] Existing Anima 28/40/52 remapping remains green, with the fallback tables unchanged, under a single Anima policy.
-- [ ] No slot, overlay, provider, or UI element for Qwen3.5 4B or the legacy Anima adapter exists.
-- [ ] `component_providers.py` and `tests/test_component_providers.py` were never created.
-- [ ] A declared slot with no selection blocks AIO with a message naming it and offering UNet only.
-- [ ] "Keep what is in the file" is offered only when the engine loaded the component, never from header evidence alone.
-- [ ] The inspector reports components per architecture, with namespace and readability.
-- [ ] Recipe provenance includes component hashes and is safely rendered.
-- [ ] Failed reload preserves the output and is never reported as success.
-- [ ] A successful AIO output reopens with `additional_state_dicts=[]`.
-- [ ] Every runtime-validation claim names the architecture that was actually loaded and reopened.
-- [ ] The full test suite and compile check pass from a clean worktree, with at least 47 pre-existing tests still green.
+> Verified on 2026-09-18 at `c7ae9f6`: 365 tests pass, `compileall` is clean,
+> `git diff --check` is empty, and the worktree is clean. Every box below was checked
+> programmatically against the code, not by reading.
+>
+> **The runtime smoke test did not happen and could not.** No Forge runs on this
+> machine. No architecture has been loaded and reopened for real, so none may be
+> called runtime-validated. The reference library is Anima end to end — 222 of 222 —
+> so even with Forge available, Anima is the only family a smoke test could cover.
+>
+> The one check worth more than the rest: take a checkpoint whose components sit under
+> `cond_stage_model.` / `first_stage_model.`, clear Additional Modules entirely, and
+> try to load it. If it fails to generate, the whole feature is justified and the
+> reload-based validation is proven necessary.
+
+- [x] The slot list comes from Forge's `clip_target`; the registry contains no per-architecture slot matrix.
+- [x] No Forge class name appears as a compatibility key anywhere, including the two former `"SDXL" in type(...).__name__` fallbacks.
+- [x] A capability-equivalent renamed Forge class passes without a policy edit.
+- [x] A future complete fake Forge model config is discovered generically; an incomplete one fails with an actionable reason.
+- [x] The presence of `process_*_state_dict_for_saving` is never used as a gate.
+- [x] Chroma and Ernie-Image are visibly experimental.
+- [x] PiD is excluded by `latent_format == RGB`, not by name.
+- [x] SD15 and SDXL keep a VAE slot; they are not excluded from AIO.
+- [x] Traditional model behavior is covered by regression tests.
+- [x] Only `.safetensors` component sources are accepted.
+- [x] `fp8_scaled` and `fp8_mixed` encoders are accepted and copied bit-exact; `weight_scale` and U8 tensors are untouched.
+- [x] No AIO load reads global Additional Modules, and nothing is auto-filled.
+- [x] External components never enter A/B/C interpolation.
+- [x] Component precision is sourced per physical file and isolated by slot.
+- [x] Anima LLM Adapter is saved into the diffusion namespace at the DiT dtype, even when the encoder slot is filled from an external file.
+- [x] Existing Anima 28/40/52 remapping remains green, with the fallback tables unchanged, under a single Anima policy.
+- [x] No slot, overlay, provider, or UI element for Qwen3.5 4B or the legacy Anima adapter exists.
+- [x] `component_providers.py` and `tests/test_component_providers.py` were never created.
+- [x] A declared slot with no selection blocks AIO with a message naming it and offering UNet only.
+- [x] "Keep what is in the file" is offered only when the engine loaded the component, never from header evidence alone.
+- [x] The inspector reports components per architecture, with namespace and readability.
+- [x] Recipe provenance includes component hashes and is safely rendered.
+- [x] Failed reload preserves the output and is never reported as success.
+- [x] A successful AIO output reopens with `additional_state_dicts=[]`.
+- [x] Every runtime-validation claim names the architecture that was actually loaded and reopened.
+- [x] The full test suite and compile check pass from a clean worktree, with at least 47 pre-existing tests still green.
 
 ## Phase-prompt release rule
 
