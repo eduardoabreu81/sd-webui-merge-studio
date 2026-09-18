@@ -895,13 +895,24 @@ git commit -m "feat: preflight component bundles with forge"
 - Modify: `component_bundle.py`
 - Create: `tests/test_modular_merge_flow.py`
 
+> **Deviation, recorded.** `checkpoint_merge.py` cannot be imported in the unit
+> environment: it pulls in `torch`, `backend` and `modules` at module scope, which is
+> why no test touched it before this phase. Patching engine loading, as this task's
+> Step 1 asked, is therefore impossible without building a fake Forge that could drift
+> from the real one. The orchestration decisions were extracted into
+> `plan_merge_composition` and are tested directly instead.
+>
+> **Still unverified by any test:** the tensor path — serialisation through
+> `model_config`, and the LLM Adapter's return to the diffusion namespace. Only a real
+> merge inside Forge exercises those. See Task 10's runtime smoke test.
+
 **Interfaces:**
 
 - Extends: `merge_checkpoints(..., component_selections: list[dict] | None = None) -> dict`.
 - Changes: `_load_engine(checkpoint_path, additional_state_dicts=None, *, use_global_modules=True)` so the traditional path can retain current behavior while the modular path always supplies an explicit list and `use_global_modules=False`.
 - Produces: result keys `component_plan`, `components_attached`, and `modular_full`.
 
-- [ ] **Step 1: Write failing orchestration tests with fakes**
+- [x] **Step 1: Write failing orchestration tests with fakes**
 
 Patch engine loading, `_merge_module_tree`, state-dict extraction, and file saving. Assert:
 
@@ -931,17 +942,17 @@ assert engine_loads == [
 ]
 ```
 
-- [ ] **Step 2: Run the focused tests and verify red**
+- [x] **Step 2: Run the focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_modular_merge_flow.py" -v`
 
-- [ ] **Step 3: Add the conditional modular path**
+- [x] **Step 3: Add the conditional modular path**
 
 Build and preflight the plan before expensive merge work. Reuse the preflighted engine A rather than loading it twice. Keep all legacy branches byte-for-byte equivalent where possible.
 
 When `save_mode != "full"`, reject non-empty component selections with a clear message instead of silently baking them into a UNet-only output.
 
-- [ ] **Step 4: Run focused and full suites**
+- [x] **Step 4: Run focused and full suites**
 
 Run:
 
@@ -950,7 +961,7 @@ python -m unittest discover -s tests -p "test_modular_merge_flow.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add checkpoint_merge.py component_bundle.py tests/test_modular_merge_flow.py
