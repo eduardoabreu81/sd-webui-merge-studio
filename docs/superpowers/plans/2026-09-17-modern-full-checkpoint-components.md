@@ -221,7 +221,7 @@ defined here because Task 2 consumes it.
 `SupportState` values: `SUPPORTED`, `EXPERIMENTAL`, `UNKNOWN`. There is no
 `NOT_APPLICABLE` — every architecture has a required set (D6).
 
-- [ ] **Step 1: Write failing capability-discovery tests**
+- [x] **Step 1: Write failing capability-discovery tests**
 
 Build minimal fake engines whose model configs expose Forge's functional attributes. Do not name the fakes after current Forge classes.
 
@@ -275,7 +275,7 @@ Add adversarial tests proving:
   capabilities;
 - no function imports Forge at module-import time.
 
-- [ ] **Step 2: Write failing policy tests**
+- [x] **Step 2: Write failing policy tests**
 
 **There is no architecture matrix (D4).** The slots come from the fake engine's
 `clip_target`; the registry is asserted per slot role. Build fake engines whose
@@ -318,7 +318,7 @@ Assert the slot policies, support states, and these invariants:
 - a generic future Forge target with no local policy still yields a usable slot with a
   generic label.
 
-- [ ] **Step 3: Run focused tests and verify the red state**
+- [x] **Step 3: Run focused tests and verify the red state**
 
 Run:
 
@@ -333,7 +333,7 @@ Do not use `python -m unittest tests.<module>` — see **Running the tests in th
 environment** above. It fails identically whether or not the module exists, which would
 make the red state meaningless.
 
-- [ ] **Step 4: Implement capability normalization and the small policy layer**
+- [x] **Step 4: Implement capability normalization and the small policy layer**
 
 Use frozen dataclasses and string enums, with exactly the field names given under
 **Interfaces** above. Normalize:
@@ -359,7 +359,7 @@ contain a per-architecture slot matrix.
 The policy layer may refine a capability profile — labels, accepted signatures, accepted
 storage, support state — but **may never invent a target that Forge did not declare.**
 
-- [ ] **Step 5: Run focused and full suites**
+- [x] **Step 5: Run focused and full suites**
 
 Run:
 
@@ -372,7 +372,7 @@ python -m unittest discover -s tests -v
 Expected: capability and policy tests pass; the full suite passes with **at least 47
 pre-existing tests** plus the new ones. A count below 47 means something regressed.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add forge_capabilities.py component_registry.py tests/test_forge_capabilities.py tests/test_component_registry.py
