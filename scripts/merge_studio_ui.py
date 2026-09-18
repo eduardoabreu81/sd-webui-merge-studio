@@ -20,6 +20,7 @@ import checkpoint_merge  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
 import quant_repair  # noqa: E402
+import component_ui
 from checkpoint_inspector import (
     available_vaes,
     format_badges_html,
@@ -291,7 +292,7 @@ DEVICE_LABEL_TO_KEY = dict(DEVICE_CHOICES)
 
 SAVE_MODE_CHOICES = [
     ("UNet Only (smaller, needs external VAE/text encoder)", "unet_only"),
-    ("Full Checkpoint (UNet + CLIP + VAE, self-contained, bigger)", "full"),
+    ("AIO (UNet + text encoder + VAE, self-contained, bigger)", "full"),
 ]
 SAVE_MODE_LABEL_TO_KEY = dict(SAVE_MODE_CHOICES)
 
@@ -450,6 +451,11 @@ INTERP_DESCRIPTIONS = {
 
 RECIPE_VERSION = 1
 MAX_LORAS = 10
+
+# Flux 1 is the widest architecture Forge declares: CLIP-L, T5XXL and a VAE.
+# Rows are pre-allocated and toggled, the same way the LoRA rows are; how many
+# are shown still comes from the architecture, never from this number.
+MAX_COMPONENT_ROWS = 3
 
 # Field order is the contract between save and load. Adding a field at the end
 # stays backwards compatible: load() falls back to the component's current
@@ -650,6 +656,97 @@ def merge_update_method(value: str):
     ]
 
 
+#: Shown in place of a filename when the checkpoint's own component is kept.
+KEEP_EMBEDDED_LABEL = "Keep what is in the file"
+
+
+def _inspect_installed_modules() -> dict:
+    """Every installed text encoder and VAE, already classified.
+
+    Keyed by the display name Forge shows, so a row's choices can be turned
+    back into a path with the same lookup the rest of this file uses.
+    """
+    infos = {}
+    for name in _available_modules():
+        try:
+            infos[name] = aux_inspector.inspect_module(_resolve_path(name, "module"))
+        except Exception:
+            continue
+    return {name: info for name, info in infos.items() if "error" not in info}
+
+
+def _component_row_states(primary_name: str, save_mode_label: str):
+    """The rows this checkpoint needs, from its header alone.
+
+    No engine is loaded here -- the form has to appear without waiting on a
+    multi-gigabyte read. Whatever this guesses is replaced by the capability
+    profile during the merge's preflight.
+    """
+    save_mode = SAVE_MODE_LABEL_TO_KEY.get(save_mode_label, "unet_only")
+    if not primary_name or save_mode != "full":
+        return ()
+    try:
+        info = checkpoint_inspector.inspect_checkpoint(_resolve_path(primary_name, "checkpoint"))
+    except Exception:
+        return ()
+    if "error" in info:
+        return ()
+    return component_ui.build_component_rows(info, save_mode, _inspect_installed_modules())
+
+
+def _refresh_component_rows(primary_name: str, save_mode_label: str):
+    """Gradio updates for the pre-allocated component rows."""
+    rows = _component_row_states(primary_name, save_mode_label)
+    updates = []
+    for i in range(MAX_COMPONENT_ROWS):
+        row = rows[i] if i < len(rows) else None
+        if row is None:
+            updates += [gr.update(visible=False), gr.update(value=""),
+                        gr.update(choices=[], value=None),
+                        gr.update(choices=[c[0] for c in component_ui.COMPONENT_FORMAT_CHOICES],
+                                  value=component_ui.COMPONENT_FORMAT_CHOICES[0][0]),
+                        gr.update(value="")]
+            continue
+        choices = list(row.choices)
+        if row.keep_embedded:
+            choices.insert(0, KEEP_EMBEDDED_LABEL)
+        note = row.status or row.warning
+        updates += [
+            gr.update(visible=True),
+            gr.update(value=row.slot_id),
+            gr.update(label=row.label, choices=choices, value=None),
+            gr.update(choices=[c[0] for c in row.format_choices], value=row.format_choices[0][0]),
+            gr.update(value=f"<div style='color:#f59e0b;font-size:0.85em;'>{note}</div>" if note else ""),
+        ]
+    return updates
+
+
+def _parse_component_args(component_args) -> list[dict]:
+    """The pre-allocated rows' values as component selections.
+
+    An empty row contributes nothing, so the plan reports it as missing and the
+    interface can name it rather than guessing something in.
+    """
+    rows = []
+    for i in range(MAX_COMPONENT_ROWS):
+        slot_id, value, fmt_label = component_args[i * 3: i * 3 + 3]
+        if not slot_id or not value:
+            continue
+        if value == KEEP_EMBEDDED_LABEL:
+            resolved = component_ui.KEEP_EMBEDDED
+        else:
+            try:
+                resolved = _resolve_path(value, "module")
+            except Exception:
+                continue
+        rows.append({
+            "slot_id": slot_id,
+            "value": resolved,
+            "format": FORMAT_LABEL_TO_KEY.get(fmt_label, "same"),
+        })
+    return component_ui.parse_component_rows(rows)
+
+
 def merge_handler(
     id_task,
     primary_name: str,
@@ -669,12 +766,32 @@ def merge_handler(
     config_source: list[str] = None,
     add_merge_recipe: bool = True,
     bake_vae_label: str = ORIGINAL_VAE_LABEL,
-    *lora_args,
+    *component_and_lora_args,
 ):
+    # One variadic, split at a known boundary: the component rows come first
+    # in the inputs list, the LoRA rows after. Two variadics is not a thing
+    # Gradio can express.
+    _split = MAX_COMPONENT_ROWS * 3
+    component_args = component_and_lora_args[:_split]
+    lora_args = component_and_lora_args[_split:]
     if not primary_name:
         gr.Warning("Select a Primary Model (A).")
         return gr.update(), "<div>Select a Primary Model (A).</div>"
     try:
+        component_selections = _parse_component_args(component_args)
+        declared = tuple(
+            component_args[i * 3]
+            for i in range(MAX_COMPONENT_ROWS)
+            if component_args[i * 3]
+        )
+        filled = {s["slot_id"] for s in component_selections}
+        missing = tuple(slot for slot in declared if slot not in filled)
+        if missing:
+            # Blocked here rather than after several gigabytes of merging.
+            message = component_ui.missing_slot_message(missing, all_slots=declared)
+            gr.Warning(message)
+            return gr.update(), f"<div>{message}</div>"
+
         interp_method = INTERP_LABEL_TO_KEY.get(interp_label, checkpoint_merge.INTERP_NO_INTERPOLATION)
         output_format = FORMAT_LABEL_TO_KEY.get(format_label, "same")
         clip_output_format = FORMAT_LABEL_TO_KEY.get(clip_format_label, "same")
@@ -731,6 +848,7 @@ def merge_handler(
             device_choice=device_choice,
             bake_vae=bake_vae,
             anima_extend_ratio=float(anima_extend_ratio or 0.0),
+            component_selections=component_selections,
             progress_cb=progress_cb,
         )
 
@@ -1037,6 +1155,45 @@ def create_merge_studio_tab():
                         "merge_studio_refresh_vae",
                     )
 
+                with gr.Accordion("AIO Components", open=True) as merge_components_accordion:
+                    gr.Markdown(
+                        "An AIO carries its own text encoder and VAE. Pick the file for each "
+                        "component this architecture needs, or keep what the checkpoint already "
+                        "has. Nothing is filled in for you, and the Additional Modules "
+                        "configured in Forge are never used here."
+                    )
+                    merge_component_rows = []
+                    merge_component_layouts = []
+                    merge_component_notes = []
+                    for i in range(MAX_COMPONENT_ROWS):
+                        with gr.Row(visible=False) as component_row_layout:
+                            component_slot = gr.Textbox(value="", visible=False)
+                            component_file = gr.Dropdown(label="Component", choices=[], value=None, scale=3)
+                            component_format = gr.Dropdown(
+                                label="Precision",
+                                choices=[c[0] for c in component_ui.COMPONENT_FORMAT_CHOICES],
+                                value=component_ui.COMPONENT_FORMAT_CHOICES[0][0],
+                                scale=2,
+                            )
+                        component_note = gr.HTML("")
+                        merge_component_rows.append((component_slot, component_file, component_format))
+                        merge_component_layouts.append(component_row_layout)
+                        merge_component_notes.append(component_note)
+
+                    _component_refresh_outputs = []
+                    for layout, (slot, file_dd, fmt), note in zip(
+                        merge_component_layouts, merge_component_rows, merge_component_notes
+                    ):
+                        _component_refresh_outputs += [layout, slot, file_dd, fmt, note]
+
+                    for _trigger in (merge_primary, merge_save_mode):
+                        _trigger.change(
+                            fn=_refresh_component_rows,
+                            inputs=[merge_primary, merge_save_mode],
+                            outputs=_component_refresh_outputs,
+                            show_progress=False,
+                        )
+
                 merge_clip_format.visible = False
                 merge_vae_format.visible = False
 
@@ -1142,6 +1299,7 @@ def create_merge_studio_tab():
                         merge_config_source,
                         merge_add_recipe,
                         merge_bake_vae,
+                        *[c for row in merge_component_rows for c in row],
                         *[c for pair in merge_lora_rows for c in pair],
                     ],
                     outputs=[merge_primary, merge_html],
