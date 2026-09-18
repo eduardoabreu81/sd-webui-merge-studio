@@ -1203,7 +1203,11 @@ There is no `None` entry in AIO mode (D6).
 
 Assert:
 
-- Flux shows `CLIP-L`, `T5XXL`, and the VAE in registry order — the only three-row case;
+- **Flux 1** (Dev / Schnell / Kontext) shows `CLIP-L`, `T5XXL`, and the VAE in registry
+  order — the only three-row case;
+- **Flux 2 Klein shows two rows, not three.** Despite the name it consumes a single encoder,
+  and it subclasses Forge's `Flux` while overriding `clip_target` — asserting on the class
+  hierarchy would get this wrong;
 - an Anima checkpoint of any generation shows exactly two rows, Qwen3 0.6B and the VAE (D3);
 - no row, badge, or option anywhere mentions Qwen3.5 4B or the legacy adapter (D2);
 - **SDXL shows one row — the VAE.** It is not excluded from AIO; its encoders are simply
@@ -1371,7 +1375,8 @@ Add a README section covering:
 - what an AIO is, and how it differs from a traditional Full Checkpoint;
 - the walkthrough: pick a checkpoint, see the rows, fill them, what happens if you do not;
 - **how many components each architecture needs** — reproduce the table from the spec's §5.
-  The rule is 1 text encoder + 1 VAE; Flux is the only exception, with 2;
+  The rule is 1 text encoder + 1 VAE; **Flux 1** (Dev / Schnell / Kontext) is the only
+  exception, with 2. Flux 2 Klein has one, despite the shared name;
 - where the component files must live (`models/text_encoder/`, `models/VAE/`);
 - `.safetensors`-only rule and the accepted storage formats, including that `fp8_scaled`
   encoders are fine;

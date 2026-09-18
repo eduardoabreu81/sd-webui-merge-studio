@@ -94,7 +94,7 @@ não como fonte de verdade em runtime:
 
 | Arquitetura | Text encoders | VAE |
 |---|---|---|
-| **Flux Dev / Kontext** | **2** — `clip_l` + `t5xxl` | ae |
+| **Flux 1** — Dev / Schnell / Kontext | **2** — `clip_l` + `t5xxl` | ae |
 | SDXL / Pony / Illustrious / NoobAI | 2 — `clip_l` + `clip_g`, sempre embutidos | sdxl-vae |
 | SD 1.5 | 1 — `clip_l`, sempre embutido | vae-ft-mse |
 | Anima (todas as gerações) | 1 — `qwen3_06b` | Qwen-Image VAE |
@@ -108,7 +108,10 @@ não como fonte de verdade em runtime:
 | Chroma | 1 — `t5xxl` | ae (Flux) |
 | Ernie-Image | 1 — `ministral3_3b` | flux2-vae |
 
-A regra geral é **1 text encoder + 1 VAE**; o Flux é a única exceção, com 2 encoders.
+A regra geral é **1 text encoder + 1 VAE**; o **Flux 1** é a única exceção, com 2 encoders.
+Flux 2 Klein, apesar do nome, tem 1 — e herda da mesma classe `Flux` do Forge,
+sobrescrevendo o `clip_target`. Chroma faz o mesmo herdando de `FluxSchnell`. A hierarquia
+de classes não diz quantos encoders uma arquitetura consome; só o `clip_target` diz.
 Flux Kontext não é classe separada no Forge — usa a mesma `Flux` e é distinguido por
 `"kontext"` no nome do arquivo, por isso herda os mesmos dois encoders.
 
@@ -376,7 +379,7 @@ Exemplos de incompatibilidades que devem ser detectadas cedo:
 - Qwen3-VL 4B não substitui o Qwen3 0.6B do Anima;
 - nem o Qwen3.5 4B nem o adapter separado do Anima 3.8B ocupam slot de text encoder (D2);
 - T5XXL não substitui UMT5XXL;
-- Flux exige conjuntamente CLIP-L e T5XXL;
+- Flux 1 exige conjuntamente CLIP-L e T5XXL; Flux 2 Klein não, apesar do nome parecido;
 - um VAE com layout latente incompatível não ocupa o slot apenas por ser chamado de VAE.
 
 Um caso que exige cuidado: o encoder do **Krea2** (`qwen3vl_4b`) e o do **Z-Image**

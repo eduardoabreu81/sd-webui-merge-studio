@@ -43,6 +43,10 @@ TRADITIONAL = {"sdxl", "sd15", "base"}
 # Lumina2 share "lumina2", and both Klein sizes share "flux2" -- the family hint
 # is not a unique architecture id, which is exactly why the slots come from
 # clip_target instead.
+#
+# The class hierarchy is no better a guide: Flux2K4B and Flux2K9B subclass Flux
+# yet consume one encoder instead of two, and Chroma subclasses FluxSchnell and
+# drops to a single T5XXL. Only clip_target is authoritative.
 IMAGE_MODELS = {
     "flux": "flux",
     "flux2_k4b": "flux2",
@@ -110,9 +114,19 @@ class SlotsComeFromForgeTests(unittest.TestCase):
                 expected = tuple(t.split(".")[0] for t in targets) + ("vae",)
                 self.assertEqual(expected, roles(policy_for(key)))
 
-    def test_flux_is_the_only_family_with_two_text_encoders_plus_vae(self):
+    def test_flux_1_is_the_only_family_with_two_text_encoders_plus_vae(self):
+        """Dev, Schnell and Kontext -- Kontext runs through the Flux class and
+        is told apart by filename, so it inherits the same two encoders."""
         self.assertEqual(("clip_l", "t5xxl", "vae"), roles(policy_for("flux")))
         self.assertEqual(3, len(policy_for("flux").slots))
+
+    def test_flux_2_klein_has_one_encoder_despite_the_shared_name(self):
+        """Flux2K4B and Flux2K9B subclass Forge's Flux but override
+        clip_target, and Chroma does the same from FluxSchnell. Class
+        hierarchy says nothing about how many encoders a family consumes."""
+        self.assertEqual(("qwen3_4b", "vae"), roles(policy_for("flux2_k4b")))
+        self.assertEqual(("qwen3_8b", "vae"), roles(policy_for("flux2_k9b")))
+        self.assertEqual(("t5xxl", "vae"), roles(policy_for("chroma")))
 
     def test_the_common_case_is_one_encoder_and_one_vae(self):
         for key in ("anima", "krea2", "zimage", "wan21", "qwen_image", "chroma"):
