@@ -1,4 +1,5 @@
 import datetime
+import html
 import json
 import os
 import shutil
@@ -20,6 +21,7 @@ import checkpoint_merge  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
 import quant_repair  # noqa: E402
+import component_recipes
 import component_ui
 from checkpoint_inspector import (
     available_vaes,
@@ -449,7 +451,7 @@ INTERP_DESCRIPTIONS = {
 
 # --- Merge recipes (save / load the whole tab as JSON) -------------------
 
-RECIPE_VERSION = 1
+RECIPE_VERSION = component_recipes.RECIPE_VERSION
 MAX_LORAS = 10
 
 # Flux 1 is the widest architecture Forge declares: CLIP-L, T5XXL and a VAE.
@@ -667,9 +669,9 @@ def _inspect_installed_modules() -> dict:
     back into a path with the same lookup the rest of this file uses.
     """
     infos = {}
-    for name in _available_modules():
+    for name in _module_choices():
         try:
-            infos[name] = aux_inspector.inspect_module(_resolve_path(name, "module"))
+            infos[name] = aux_inspector.inspect_module(_inspect_path(f"[module] {name}"))
         except Exception:
             continue
     return {name: info for name, info in infos.items() if "error" not in info}
@@ -686,7 +688,7 @@ def _component_row_states(primary_name: str, save_mode_label: str):
     if not primary_name or save_mode != "full":
         return ()
     try:
-        info = checkpoint_inspector.inspect_checkpoint(_resolve_path(primary_name, "checkpoint"))
+        info = inspect_checkpoint(_checkpoint_path(primary_name))
     except Exception:
         return ()
     if "error" in info:
@@ -736,7 +738,7 @@ def _parse_component_args(component_args) -> list[dict]:
             resolved = component_ui.KEEP_EMBEDDED
         else:
             try:
-                resolved = _resolve_path(value, "module")
+                resolved = _inspect_path(f"[module] {value}")
             except Exception:
                 continue
         rows.append({
@@ -853,7 +855,59 @@ def merge_handler(
         )
 
         sd_models.list_models()
-        gr.Info("Merge completed successfully!", duration=5)
+
+        # An AIO is announced as finished only once it has reopened on its own.
+        # Saying "completed" for a file that still needs external modules would
+        # be the exact claim this feature exists to stop making.
+        modular = result.get("modular_full")
+        validated = result.get("validated", True)
+        if not modular:
+            gr.Info("Merge completed successfully!", duration=5)
+        elif validated:
+            gr.Info("AIO saved and verified: it reopens on its own.", duration=6)
+        else:
+            gr.Warning(
+                "Saved, but NOT validated as an AIO: it did not reopen without "
+                "external modules. The file was kept -- see the details below.",
+                duration=12,
+            )
+
+        attached = result.get("components_attached") or []
+        components_desc = ""
+        if attached:
+            listed = ", ".join(
+                f"{html.escape(str(c.get('label') or c.get('slot')))}: "
+                f"<code>{html.escape(str(c.get('name') or 'kept from source'))}</code>"
+                for c in attached
+            )
+            components_desc = f"<b>Components:</b> {listed}<br>"
+
+        validation_desc = ""
+        if modular:
+            if validated:
+                validation_desc = (
+                    "<b>Validated:</b> <span style='color:#10b981;font-weight:bold;'>"
+                    "reopened with no external modules</span><br>"
+                )
+            else:
+                reasons = "".join(
+                    f"<li>{html.escape(str(e))}</li>"
+                    for e in (result.get("validation").errors if result.get("validation") else ())
+                )
+                validation_desc = (
+                    "<b style='color:#f59e0b;'>Not validated</b> &mdash; this file still "
+                    "needs external modules to load:"
+                    f"<ul style='margin:4px 0 8px 18px;'>{reasons}</ul>"
+                )
+
+        support = ""
+        plan = result.get("component_plan")
+        if plan is not None and str(getattr(plan, "support", "")).endswith("experimental"):
+            support = (
+                "<b style='color:#f59e0b;'>Experimental architecture</b> &mdash; the same "
+                "checks ran, but this family has not been exercised against a real model.<br>"
+            )
+
         skipped_total = sum(len(v) for v in result["skipped"].values())
         size_str = _format_size(result["output"])
         loras_desc = ", ".join(f"{a['name']} ({a['strength']})" for a in result.get("loras", [])) if result.get("loras") else ""
@@ -876,6 +930,9 @@ def merge_handler(
             f"<b>File size:</b> <span style='color: #10b981; font-weight: bold;'>{size_str}</span><br>"
             f"<b>Format:</b> <code>{result['output_format']}</code> (Mode: <code>{save_mode}</code>)<br>"
             f"<b>Merged layers:</b> UNet: {result['merged']['unet']}, CLIP: {result['merged']['clip']}, VAE: {result['merged']['vae']}<br>"
+            + components_desc
+            + validation_desc
+            + support
             + remap_desc
             + baked_vae_desc
             + (f"<b>Baked LoRAs:</b> {loras_desc}<br>" if loras_desc else "")

@@ -19,6 +19,7 @@ class RecipeDashboardEscapingTests(unittest.TestCase):
         return {
             "filename": PAYLOAD,
             "components": {"unet": True},
+        "embedded_components": (),
             "architecture": PAYLOAD,
             "precision": PAYLOAD,
             "size_str": "1 MB",
@@ -101,6 +102,76 @@ class LoraDashboardEscapingTests(unittest.TestCase):
 
         self.assertNotIn(PAYLOAD, html)
         self.assertIn(ESCAPED, html)
+
+
+
+class RecipeComponentEscapingTests(unittest.TestCase):
+    """Component names in a recipe are attacker-shaped text that travelled
+    inside a downloaded .safetensors header, like everything else here."""
+
+    def _dashboard(self, name):
+        from checkpoint_inspector import format_recipe_dashboard_html
+
+        return format_recipe_dashboard_html(
+            {
+                "filename": "aio.safetensors",
+                "architecture": "Anima (DiT)",
+                "precision": "BF16",
+                "size_str": "4 GB",
+                "components": {"unet": True, "clip": True, "vae": True},
+                "embedded_components": (),
+                "recipe": {
+                    "type": "MergeStudio-AnimaMerge",
+                    "components": [
+                        {
+                            "slot": "qwen3_06b",
+                            "label": "Qwen3 0.6B",
+                            "name": name,
+                            "sha256": "cd2a512003e2f9f3",
+                            "source": "file",
+                            "source_precision": "BF16",
+                            "output_precision": "same",
+                        }
+                    ],
+                },
+                "raw_metadata": {},
+            }
+        )
+
+    def test_a_component_filename_cannot_inject_markup(self):
+        html = self._dashboard("<img src=x onerror=alert(1)>.safetensors")
+        self.assertNotIn("<img src=x", html)
+        self.assertIn("&lt;img src=x", html)
+
+    def test_it_is_escaped_once_not_twice(self):
+        """Double escaping is safe but shows the user `&lt;img` literally."""
+        html = self._dashboard("<img>.safetensors")
+        self.assertNotIn("&amp;lt;", html)
+
+    def test_a_hostile_slot_label_cannot_inject_markup(self):
+        from checkpoint_inspector import format_recipe_dashboard_html
+
+        html = format_recipe_dashboard_html(
+            {
+                "filename": "aio.safetensors",
+                "architecture": "Anima (DiT)",
+                "precision": "BF16",
+                "size_str": "4 GB",
+                "components": {"unet": True},
+                "embedded_components": (),
+                "recipe": {
+                    "components": [
+                        {"slot": "<script>x</script>", "name": "a.safetensors"}
+                    ]
+                },
+                "raw_metadata": {},
+            }
+        )
+        self.assertNotIn("<script>", html)
+
+    def test_the_panel_says_the_claim_is_not_inference(self):
+        html = self._dashboard("qwen.safetensors")
+        self.assertIn("not read back from its tensors", html)
 
 
 if __name__ == "__main__":

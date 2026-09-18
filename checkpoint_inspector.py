@@ -979,6 +979,46 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         models_cards += _model_card("Secondary Model (B)", s_hash)
         models_cards += _model_card("Tertiary Model (C)", t_hash)
 
+        # Components attached when this file was built as an AIO. This is what
+        # the recipe *claims*, not what the tensors show -- the two are
+        # different questions, and the embedded-components panel above answers
+        # the second one. Labelled so nobody reads it as fresh inference.
+        components_html = ""
+        recipe_components = recipe.get("components") or []
+        if recipe_components:
+            component_rows = ""
+            for entry in recipe_components:
+                # Escaped once, at interpolation. Everything in here came out
+                # of a downloaded file's metadata.
+                name = str(entry.get("name") or "")
+                origin = (
+                    "kept from the source checkpoint"
+                    if str(entry.get("source") or "") == "embedded"
+                    else name or "unnamed file"
+                )
+                c_out = _esc(entry.get("output_precision") or "same")
+                c_in = _esc(entry.get("source_precision") or "")
+                c_sha = _esc(str(entry.get("sha256") or "")[:12])
+                precision = f"{c_in} &rarr; {c_out}" if c_in else c_out
+                component_rows += (
+                    "<div style='display:flex;justify-content:space-between;gap:12px;"
+                    "padding:6px 10px;border-radius:6px;background:rgba(255,255,255,0.03);'>"
+                    f"<span style='font-weight:500;'>"
+                    f"{_esc(entry.get('label') or entry.get('slot') or 'Component')}</span>"
+                    f"<span style='color:#9ca3af;'>{_esc(origin)}"
+                    + (f" <code>{c_sha}</code>" if c_sha else "")
+                    + f" &middot; {precision}</span></div>"
+                )
+            components_html = (
+                "<div style='margin-top:14px;'>"
+                "<div style='font-size:12px;font-weight:600;text-transform:uppercase;"
+                "color:#9ca3af;margin-bottom:6px;'>Components recorded in this recipe</div>"
+                f"<div style='display:flex;flex-direction:column;gap:6px;'>{component_rows}</div>"
+                "<div style='margin-top:6px;color:#6b7280;font-size:0.85em;'>"
+                "Declared by whoever built the file, not read back from its tensors."
+                "</div></div>"
+            )
+
         # Baked LoRAs
         baked_loras = recipe.get("baked_loras") or recipe.get("loras") or []
         loras_html = ""
@@ -1029,6 +1069,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"</div>"
             f"{math_html}"
             f"<div style='margin-top: 10px;'>{models_cards}</div>"
+            f"{components_html}"
             f"{loras_html}"
             f"</div>"
         )
