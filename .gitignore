@@ -3,3 +3,6 @@ __pycache__/
 
 # Saved merge recipes
 recipes/
+
+# Internal audit notes -- not user documentation
+docs/AIO-COMPONENTS-AUDIT.md
