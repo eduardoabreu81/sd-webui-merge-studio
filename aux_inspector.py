@@ -378,13 +378,54 @@ _ENCODER_SIGNATURES = (
 # A standalone encoder file carries no "qwen3_06b."-style prefix -- that only
 # appears once it is bundled into a checkpoint. Standalone files are told apart
 # by shape instead: (transformer layers, hidden size, has a vision tower).
-# Measured from real files; the "used by" half comes from Forge's own
-# clip_target declarations in huggingface_guess/model_list.py.
+#
+# The signature id is the role Forge names in its clip_target, so a classified
+# file can be matched straight against the slot it is meant to fill.
+#
+# Krea2's qwen3vl_4b and Z-Image's qwen3_4b are the delicate pair: both are 36
+# layers at hidden 2560 with the same 151936-token vocabulary, and the vision
+# tower is the only thing separating them. A text-only export of Qwen3-VL would
+# be indistinguishable, which is a limit worth knowing rather than papering over.
 _ENCODER_SHAPES = {
-    (28, 1024, False): "Qwen3 0.6B — Anima's native text encoder",
-    (36, 2560, False): "Qwen3 4B — Z-Image, and Anima-3.8B's expanded adapter",
-    (36, 2560, True): "Qwen3-VL 4B — Krea 2",
+    # Measured from real files in a Forge Neo install.
+    (28, 1024, False): ("qwen3_06b", "Qwen3 0.6B — Anima's native text encoder"),
+    (36, 2560, False): ("qwen3_4b", "Qwen3 4B — Z-Image, Flux.2-Klein 4B"),
+    (36, 2560, True): ("qwen3vl_4b", "Qwen3-VL 4B — Krea 2"),
+    # From the published model configs; no local file to measure against.
+    (36, 4096, False): ("qwen3_8b", "Qwen3 8B — Flux.2-Klein 9B"),
+    (28, 3584, True): ("qwen25_7b", "Qwen2.5-VL 7B — Qwen-Image"),
+    (26, 2304, False): ("gemma2_2b", "Gemma2 2B — Lumina Image 2"),
 }
+
+# Ernie-Image's ministral3_3b is deliberately absent: no local copy exists to
+# measure, and a guessed shape that happens to match would be worse than
+# reporting the measured evidence and declining to name it.
+
+# T5 and UMT5 share a layout; Forge separates them on vocabulary size alone.
+_T5_VOCABS = {
+    32128: ("t5xxl", "T5-XXL"),
+    256384: ("umt5xxl", "UMT5-XXL — Wan"),
+}
+
+# CLIP text towers, by hidden size. From the published configs.
+_CLIP_HIDDEN = {
+    768: ("clip_l", "CLIP-L"),
+    1280: ("clip_g", "CLIP-G"),
+}
+
+_STORAGE_PLAIN = "plain"
+_STORAGE_FP8_SCALED = "fp8_scaled"
+_STORAGE_FP8_MIXED = "fp8_mixed"
+_STORAGE_GGUF = "gguf"
+_STORAGE_NUNCHAKU = "nunchaku_svdq"
+_STORAGE_NF4 = "nf4"
+
+# Scaled weights are the format Forge's own wiki distributes for most
+# architectures' text encoders, so they are embeddable. What is not embeddable
+# is a container that is not safetensors tensors in the first place.
+_EMBEDDABLE_STORAGE = frozenset(
+    {_STORAGE_PLAIN, _STORAGE_FP8_SCALED, _STORAGE_FP8_MIXED}
+)
 
 
 def _encoder_shape(keys: list[str], header: dict[str, Any]) -> tuple[int, int, bool] | None:
@@ -400,32 +441,228 @@ def _encoder_shape(keys: list[str], header: dict[str, Any]) -> tuple[int, int, b
     return len(layers), hidden, has_vision
 
 
-def _classify_module(keys: list[str], header: dict[str, Any]) -> tuple[str, str]:
-    """(kind, description) for an auxiliary module file."""
-    # A file that still carries a bundled prefix names itself outright.
+def _shapes(header: dict[str, Any]):
+    """Every tensor's shape, skipping the metadata entry."""
+    for key, info in header.items():
+        if key == "__metadata__" or not isinstance(info, dict):
+            continue
+        shape = info.get("shape")
+        if isinstance(shape, list):
+            yield key, shape
+
+
+def detect_unsupported_storage(header: dict[str, Any], filepath: str = "") -> str | None:
+    """Why this file cannot be embedded, or None when it can.
+
+    Refuses containers rather than precision: a scaled FP8 encoder is a normal
+    thing to bake in, while a GGUF or a bitsandbytes payload is not tensors this
+    path can serialise at all.
+    """
+    lowered = str(filepath).lower()
+    if lowered and not lowered.endswith(".safetensors"):
+        suffix = os.path.splitext(lowered)[1] or "(no extension)"
+        return f"Only .safetensors components can be embedded; this is {suffix}."
+
+    kind = _detect_storage_kind(header)
+    if kind in _EMBEDDABLE_STORAGE:
+        return None
+    return {
+        _STORAGE_GGUF: "GGUF payloads cannot be embedded into a safetensors checkpoint.",
+        _STORAGE_NUNCHAKU: "Nunchaku / SVDQuant payloads cannot be embedded.",
+        _STORAGE_NF4: "NF4 / bitsandbytes payloads cannot be embedded.",
+    }.get(kind, f"Unsupported storage format: {kind}.")
+
+
+def _detect_storage_kind(header: dict[str, Any]) -> str:
+    """How the weights are stored, from key and metadata evidence.
+
+    Ordered most specific first, because the markers overlap: a mixed release
+    carries the scaled markers too.
+    """
+    metadata = header.get("__metadata__") or {}
+    keys = [k for k in header if k != "__metadata__"]
+    blob = " ".join(str(v) for v in metadata.values()).lower() if metadata else ""
+
+    if "gguf" in blob:
+        return _STORAGE_GGUF
+
+    has_qweight = any(k.endswith(".qweight") for k in keys)
+    if has_qweight and any(
+        k.endswith((".wtscale", ".smooth_factor", ".wscales", ".proj_down")) for k in keys
+    ):
+        return _STORAGE_NUNCHAKU
+
+    if any("bitsandbytes" in k or k.endswith((".absmax", ".nested_absmax")) for k in keys):
+        return _STORAGE_NF4
+    if "nf4" in blob:
+        return _STORAGE_NF4
+
+    if any(k.endswith("weight_scale_2") for k in keys):
+        return _STORAGE_FP8_MIXED
+    if any(k.endswith("weight_scale") for k in keys):
+        return _STORAGE_FP8_SCALED
+    return _STORAGE_PLAIN
+
+
+def _t5_signature(keys: list[str], header: dict[str, Any]):
+    """T5 or UMT5, by the vocabulary Forge itself discriminates on."""
+    if not any(k.startswith("encoder.block.") for k in keys):
+        return None
+    shared = next(
+        (s for k, s in _shapes(header) if k == "shared.weight" and len(s) > 1), None
+    )
+    if shared is None:
+        return None
+    return _T5_VOCABS.get(shared[0])
+
+
+def _clip_signature(keys: list[str], header: dict[str, Any]):
+    if not any(k.startswith("text_model.") for k in keys):
+        return None
+    embed = next(
+        (
+            s
+            for k, s in _shapes(header)
+            if k.endswith("token_embedding.weight") and len(s) > 1
+        ),
+        None,
+    )
+    if embed is None:
+        return None
+    return _CLIP_HIDDEN.get(embed[1])
+
+
+def _vae_evidence(keys: list[str], header: dict[str, Any]):
+    """``(latent_channels, video_capable)`` when this looks like an autoencoder.
+
+    The Qwen-Image / Wan / Anima autoencoder uses 3D convolution and has no
+    ``decoder.conv_in.weight`` at all -- its entry convolution is
+    ``decoder.conv1.weight``. Reading latent channels from ``conv_in`` alone
+    silently finds nothing for that whole family.
+    """
+    if not any(k.startswith(("encoder.", "decoder.", "conv1.", "conv2.")) for k in keys):
+        return None
+
+    shapes = dict(_shapes(header))
+    volumetric = any(len(s) == 5 for s in shapes.values()) or any(
+        "time_conv" in k for k in keys
+    )
+
+    latent = None
+    for name in ("decoder.conv_in.weight", "decoder.conv1.weight"):
+        shape = shapes.get(name)
+        if shape and len(shape) > 1:
+            latent = shape[1]
+            break
+    if latent is None:
+        shape = shapes.get("conv2.weight")
+        if shape:
+            latent = shape[0]
+
+    if latent is None and not volumetric:
+        return None
+    return latent, volumetric
+
+
+def classify_component_header(header: dict[str, Any]) -> dict[str, Any]:
+    """What a standalone component file is, from its header alone.
+
+    The order matters. Encoder signatures are tested before any autoencoder
+    rule, because a T5 carries ``encoder.block.*`` keys and an earlier version
+    of this function concluded from those that it was looking at a VAE.
+    """
+    keys = [k for k in header if k != "__metadata__"]
+    storage = _detect_storage_kind(header)
+    shape = _encoder_shape(keys, header)
+    layers, hidden, vision = shape if shape else (None, None, False)
+
+    result = {
+        "kind": "unknown",
+        "signature_id": None,
+        "description": "Could not classify from tensor names",
+        "layers": layers,
+        "hidden": hidden,
+        "has_vision": vision,
+        "latent_channels": None,
+        "video_capable": False,
+        "storage_kind": storage,
+        "supported_storage": storage in _EMBEDDABLE_STORAGE,
+    }
+
+    if not keys:
+        return result
+
+    if storage not in _EMBEDDABLE_STORAGE:
+        result["kind"] = "unsupported"
+        result["description"] = (
+            detect_unsupported_storage(header) or f"Unsupported storage: {storage}."
+        )
+        return result
+
+    # 1. A file that still carries its bundled prefix names itself outright.
     joined = "\n".join(keys[:4000])
     for token, desc in _ENCODER_SIGNATURES:
-        if token in joined:
-            return "text_encoder", desc
+        if f"{token}." in joined:
+            result.update(kind="text_encoder", signature_id=token, description=desc)
+            return result
 
-    if any(k.startswith(("encoder.", "decoder.", "first_stage_model.", "vae.")) for k in keys):
-        if any("time_conv" in k or "conv_in.conv" in k for k in keys):
-            return "vae", "Video-capable VAE (Wan / Anima / Qwen-Image family)"
-        return "vae", "Autoencoder"
+    # 2. T5 / UMT5, before anything reads their encoder.* keys as an autoencoder.
+    found = _t5_signature(keys, header)
+    if found:
+        signature, desc = found
+        result.update(kind="text_encoder", signature_id=signature, description=desc)
+        return result
 
-    shape = _encoder_shape(keys, header)
+    # 3. Causal LM encoders, by layer count, hidden size and vision tower.
     if shape is not None:
-        layers, hidden, vision = shape
-        known = _ENCODER_SHAPES.get(shape)
-        if known:
-            return "text_encoder", known
-        # Report what was measured rather than guessing a name.
-        return "text_encoder", (
-            f"Transformer text encoder — {layers} layers, hidden size {hidden}"
-            + (", with a vision tower" if vision else "")
-            + " (not one of the layouts recognised here)"
+        found = _ENCODER_SHAPES.get(shape)
+        if found:
+            signature, desc = found
+            result.update(kind="text_encoder", signature_id=signature, description=desc)
+            return result
+
+    # 4. CLIP text towers.
+    found = _clip_signature(keys, header)
+    if found:
+        signature, desc = found
+        result.update(kind="text_encoder", signature_id=signature, description=desc)
+        return result
+
+    # 5. Autoencoders, now that no encoder signature is left to shadow.
+    found = _vae_evidence(keys, header)
+    if found:
+        latent, volumetric = found
+        result.update(
+            kind="vae",
+            signature_id="vae",
+            latent_channels=latent,
+            video_capable=volumetric,
+            description=(
+                "Video-capable VAE (Wan / Anima / Qwen-Image family)"
+                if volumetric
+                else "Autoencoder"
+            )
+            + (f" — {latent} latent channels" if latent else ""),
         )
-    return "unknown", "Could not classify from tensor names"
+        return result
+
+    # 6. Report what was measured rather than guessing a name.
+    if shape is not None:
+        result.update(
+            kind="text_encoder",
+            description=(
+                f"Transformer text encoder — {layers} layers, hidden size {hidden}"
+                + (", with a vision tower" if vision else "")
+                + " (not one of the layouts recognised here)"
+            ),
+        )
+    return result
+
+
+def _classify_module(keys: list[str], header: dict[str, Any]) -> tuple[str, str]:
+    """(kind, description) for an auxiliary module file."""
+    result = classify_component_header(header)
+    return result["kind"], result["description"]
 
 
 def detect_file_kind(filepath: str) -> str:
@@ -480,11 +717,11 @@ def inspect_module(filepath: str) -> dict[str, Any]:
         return {"error": f"Failed to read header: {e}"}
 
     keys = [k for k in header if k != "__metadata__"]
-    kind, desc = _classify_module(keys, header)
+    detected = classify_component_header(header)
     size = os.path.getsize(filepath)
     return {
-        "kind": kind,
-        "description": desc,
+        "kind": detected["kind"],
+        "description": detected["description"],
         "filename": os.path.basename(filepath),
         "filepath": filepath,
         "file_size": size,
@@ -492,6 +729,12 @@ def inspect_module(filepath: str) -> dict[str, Any]:
         "total_tensors": len(keys),
         "precision": _detect_precision(header),
         "raw_metadata": header.get("__metadata__", {}) or {},
+        # What the component is, for matching against the slot it should fill.
+        "signature_id": detected["signature_id"],
+        "latent_channels": detected["latent_channels"],
+        "video_capable": detected["video_capable"],
+        "storage_kind": detected["storage_kind"],
+        "supported_storage": detected["supported_storage"],
     }
 
 
