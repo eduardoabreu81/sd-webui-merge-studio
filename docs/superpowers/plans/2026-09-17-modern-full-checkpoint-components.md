@@ -720,7 +720,7 @@ Existing `bake_vae: "none"` remains available only outside the AIO path.
 
 `build_component_plan(architecture_id, primary_path, checkpoint_info, selections, capability_profile=None, inspect_fn=inspect_module) -> ComponentPlan` is pure apart from the injected inspector. A header-only plan is provisional and must be reconciled with the loaded profile in Task 5.
 
-- [ ] **Step 1: Write failing validation tests**
+- [x] **Step 1: Write failing validation tests**
 
 Cover:
 
@@ -765,17 +765,17 @@ class ComponentPlanTests(unittest.TestCase):
         )
 ```
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_component_bundle.py" -v`
 
-- [ ] **Step 3: Implement minimal immutable plan construction**
+- [x] **Step 3: Implement minimal immutable plan construction**
 
 All validation errors must include the architecture label, slot label, selected basename, detected signature, and expected signatures when those values exist. Do not import Forge or Gradio in this phase.
 
 For `source="embedded"`, store `primary_path` as the component path so source precision and provenance remain attributable to a physical safetensors file.
 
-- [ ] **Step 4: Run focused and full suites**
+- [x] **Step 4: Run focused and full suites**
 
 Run:
 
@@ -784,7 +784,7 @@ python -m unittest discover -s tests -p "test_component_bundle.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add component_bundle.py tests/test_component_bundle.py
