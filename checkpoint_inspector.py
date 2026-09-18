@@ -108,7 +108,6 @@ _ARCH_NAMESPACES = {
     "anima": _MODERN_NAMESPACES,
     "sdxl": _TRADITIONAL_NAMESPACES,
     "sd15": _TRADITIONAL_NAMESPACES,
-    "sd3": _TRADITIONAL_NAMESPACES,
 }
 
 _TEXT_ENCODER_NAMESPACES = (
@@ -144,8 +143,11 @@ def infer_architecture_id(header: dict[str, Any], filename: str = "") -> str:
     if any("llm_adapter" in k for k in keys):
         return "anima"
 
+    # SD3's joint_blocks are recognisable, but Forge Neo has no model config
+    # for it -- there is no engine to load and no capability profile to reach,
+    # so it gets no component slots. The human-readable label still names it.
     if diffusion("joint_blocks."):
-        return "sd3"
+        return ARCH_UNKNOWN
 
     if any(k.startswith("conditioner.embedders.") for k in keys):
         return "sdxl"

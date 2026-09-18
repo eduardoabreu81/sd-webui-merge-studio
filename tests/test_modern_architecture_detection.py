@@ -89,9 +89,12 @@ class ArchitectureIsDecidedByTheDenoiserTests(unittest.TestCase):
         )
         self.assertEqual("sdxl", infer_architecture_id(head))
 
-    def test_sd3_is_recognised_by_its_joint_blocks(self):
+    def test_sd3_gets_no_architecture_id_because_forge_cannot_load_it(self):
+        """Its joint_blocks are recognisable, but Forge Neo ships no model
+        config for SD3. Naming it would offer component slots for an engine
+        that can never be loaded, so it stays unknown."""
         head = header("model.diffusion_model.joint_blocks.0.x_block.attn.qkv.weight")
-        self.assertEqual("sd3", infer_architecture_id(head))
+        self.assertEqual("unknown", infer_architecture_id(head))
 
 
 class AmbiguityStaysUnknownTests(unittest.TestCase):

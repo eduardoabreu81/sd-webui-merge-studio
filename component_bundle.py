@@ -34,8 +34,10 @@ PROVISIONAL_SLOTS: dict[str, tuple[str, ...]] = {
     # checkpoint and are not selectable.
     "sdxl": ("vae",),
     "sd15": ("vae",),
-    "sd3": ("vae",),
 }
+# Every id here must be one Forge can actually load. SD3 is deliberately
+# absent: its headers are recognisable, but Forge Neo ships no model config for
+# it, so there is no engine to preflight against and no AIO to build.
 
 #: A component is either picked from a folder or kept from the checkpoint.
 #: There is no "none" in an AIO plan: an AIO without an encoder is a
