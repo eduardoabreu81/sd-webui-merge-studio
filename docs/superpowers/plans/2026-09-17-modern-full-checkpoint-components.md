@@ -805,9 +805,14 @@ git commit -m "feat: validate explicit component plans"
 
 - Consumes: `ComponentPlan`, Forge's `forge_loader`, `capability_profile_from_engine`, and provider overlays.
 - Produces: `preflight_component_plan(primary_path, plan, loader=None) -> object` returning the loaded engine on success. `loader=None` performs a lazy Forge import inside the function.
-- Produces: `validate_loaded_components(engine, plan) -> None`.
+- Produces: `validate_loaded_components(engine, plan) -> ComponentPlan`.
+  **Deviation from the first draft:** it returns the reconciled plan instead of
+  `None`. Missing and dropped slots are data the caller has to act on, not errors,
+  so they have to come back. `ComponentPlan.dropped_slots` is new and separate from
+  `missing_slots`: "select a text encoder" is the wrong advice for someone who
+  already did and whose file Forge declined. `is_complete` covers both.
 
-- [ ] **Step 1: Write failing loader-boundary tests**
+- [x] **Step 1: Write failing loader-boundary tests**
 
 Use an injected fake loader; do not import a real Forge runtime in unit tests:
 
@@ -847,11 +852,11 @@ Add failures for:
 - empty external list passed when every selected component is embedded;
 - global Additional Modules never read.
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_component_bundle.py" -v`
 
-- [ ] **Step 3: Implement preflight against Forge-owned targets**
+- [x] **Step 3: Implement preflight against Forge-owned targets**
 
 Derive a fresh `ForgeCapabilityProfile` from the loaded engine, reconcile it with the provisional policy/plan, then validate the normalized text targets and VAE target against `engine.forge_objects.clip` and `engine.forge_objects.vae`. Never dispatch from the Python class name.
 
@@ -864,7 +869,7 @@ Catch loader errors once and raise `ComponentValidationError` with contextual in
 
 Do not import `backend.loader` at module import time. The repository's unit suite runs outside an initialized Forge runtime, so Forge imports belong inside the `loader is None` branch only.
 
-- [ ] **Step 4: Run focused and full suites**
+- [x] **Step 4: Run focused and full suites**
 
 Run:
 
@@ -873,7 +878,7 @@ python -m unittest discover -s tests -p "test_component_bundle.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add component_bundle.py component_registry.py tests/test_component_bundle.py
