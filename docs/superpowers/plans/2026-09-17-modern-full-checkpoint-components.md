@@ -1117,9 +1117,11 @@ git commit -m "feat: preserve component precision and provenance"
 
 - Produces: `OutputValidation(validated: bool, errors: tuple[str, ...], checked_slots: tuple[str, ...])`.
 - Produces: `validate_aio_output(output_path, plan, loader=None) -> OutputValidation`. `loader=None` performs a lazy Forge import inside the function.
+  A `plan` of `None` validates trivially: traditional and UNet-only outputs keep their
+  existing completion semantics, and this check belongs to the AIO path alone.
 - Extends merge result with `validation` and `validated`.
 
-- [ ] **Step 1: Write failing output-validation tests**
+- [x] **Step 1: Write failing output-validation tests**
 
 Cover:
 
@@ -1157,11 +1159,11 @@ class FullCheckpointValidationTests(unittest.TestCase):
         self.assertEqual([(str(output), ())], calls)
 ```
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_full_checkpoint_validation.py" -v`
 
-- [ ] **Step 3: Implement validation and merge integration**
+- [x] **Step 3: Implement validation and merge integration**
 
 Run validation immediately after `save_checkpoint_file`. Do not delete or overwrite a failed output. Return structured errors; do not reduce them to a boolean.
 
@@ -1174,7 +1176,7 @@ configured Additional Modules while *appearing* self-contained. Reloading with
 `additional_state_dicts=[]` is the only way to tell a real AIO from one that merely looks
 like one. Do not weaken this step.
 
-- [ ] **Step 4: Run focused and full suites**
+- [x] **Step 4: Run focused and full suites**
 
 Run:
 
@@ -1183,7 +1185,7 @@ python -m unittest discover -s tests -p "test_full_checkpoint_validation.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add component_bundle.py checkpoint_merge.py tests/test_full_checkpoint_validation.py
