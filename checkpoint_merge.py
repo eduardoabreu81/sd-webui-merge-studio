@@ -36,8 +36,10 @@ from checkpoint_inspector import load_custom_vae_state_dict
 from component_bundle import (
     ComponentSelection,
     ComponentValidationError,
+    OutputValidation,
     build_component_plan,
     component_provenance,
+    validate_aio_output,
     plan_merge_composition,
     preflight_component_plan,
     validate_loaded_components,
@@ -880,6 +882,18 @@ def merge_checkpoints(
             progress_cb("Saving file...")
         save_checkpoint_file(sd, output_path, metadata=metadata)
 
+        # An AIO is only an AIO if it reopens on its own. The file is never
+        # deleted or rewritten when this fails -- it is kept, clearly marked
+        # as unvalidated, with the reasons intact.
+        if composition.modular:
+            if progress_cb:
+                progress_cb("Verifying the saved checkpoint reopens on its own...")
+            validation = validate_aio_output(output_path, composition.plan)
+            if progress_cb and not validation.validated:
+                progress_cb("Saved, but NOT validated as a self-contained AIO.")
+        else:
+            validation = OutputValidation(validated=True)
+
         return {
             "output": output_path,
             "merged": {"unet": merged_unet, "clip": merged_clip, "vae": (len(custom_vae_sd) if is_custom_vae else merged_vae)},
@@ -890,6 +904,8 @@ def merge_checkpoints(
             "loras": applied_loras,
             "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),
             "modular_full": composition.modular,
+            "validated": validation.validated,
+            "validation": validation,
             "component_plan": composition.plan,
             "components_attached": component_provenance(composition.plan),
         }

@@ -21,6 +21,7 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 
+from checkpoint_inspector import read_safetensors_header
 from component_registry import SupportState, apply_policy, get_slot_policy
 from forge_capabilities import ForgeCapabilityError
 
@@ -88,6 +89,12 @@ class ComponentPlan:
     #: Kept apart from `missing_slots` because "select a text encoder" is the
     #: wrong advice for someone who already did.
     dropped_slots: tuple[str, ...] = ()
+    #: The namespaces this architecture writes its components under, taken
+    #: from the loaded engine. Output validation checks against these rather
+    #: than a table of its own -- a future architecture must not need an edit
+    #: here to be validated.
+    text_namespace: str = ""
+    vae_namespace: str = ""
     slot_order: tuple[str, ...] = field(default=())
 
     @property
@@ -454,6 +461,156 @@ def _incomplete_plan_message(plan: ComponentPlan) -> str:
     )
 
 
+@dataclass(frozen=True)
+class OutputValidation:
+    validated: bool
+    errors: tuple[str, ...] = ()
+    checked_slots: tuple[str, ...] = ()
+
+
+#: Requested output formats, as they appear in the final header.
+_FORMAT_HEADER_CODES = {"fp16": "F16", "bf16": "BF16", "fp32": "F32"}
+
+
+def _namespace_for(plan: ComponentPlan, component: ResolvedComponent) -> str:
+    return plan.vae_namespace if component.slot_id == "vae" else plan.text_namespace
+
+
+def _component_keys(header, plan, component) -> list[str]:
+    """The saved keys belonging to one component.
+
+    Both halves of the namespace come from the loaded engine, never a table
+    here -- but they nest differently for the two kinds, and assuming otherwise
+    doubles the prefix. A text encoder is saved under the architecture's outer
+    prefix *plus* its own slot namespace from `clip_target`
+    (``text_encoders.`` + ``qwen3_06b.transformer.``), while a VAE's slot
+    namespace already is the architecture's (``vae.``), because it came from
+    `vae_key_prefix` in the first place.
+    """
+    outer = _namespace_for(plan, component)
+    candidates = {
+        inner if outer and inner.startswith(outer) else outer + inner
+        for inner in component.internal_prefixes or ()
+    }
+    if not candidates:
+        candidates = {outer}
+    return [
+        key
+        for key in header
+        if key != "__metadata__" and key.startswith(tuple(candidates))
+    ]
+
+
+def validate_aio_output(
+    output_path: str, plan: ComponentPlan | None, loader=None
+) -> OutputValidation:
+    """Prove a saved file is an AIO, rather than assume it.
+
+    Four checks, in order, and the last one is the point: the file is reopened
+    with an **empty** external-module list. Across the reference library only
+    two checkpoints in 222 embed their components where their own architecture
+    looks for them, so a file that merely contains the right tensors is not
+    evidence of anything. Reloading is the only way to tell a real AIO from one
+    that quietly leans on whatever is configured globally.
+
+    A failed output is never deleted or overwritten -- it is kept, and the
+    reasons come back structured rather than flattened into a boolean.
+    """
+    if plan is None:
+        # Traditional and UNet-only outputs keep their existing semantics.
+        return OutputValidation(validated=True)
+
+    errors: list[str] = []
+
+    try:
+        header, _ = read_safetensors_header(output_path)
+    except Exception as exc:
+        return OutputValidation(
+            validated=False,
+            errors=(f"Could not read the saved file back: {exc}",),
+            checked_slots=tuple(c.slot_id for c in plan.components),
+        )
+
+    for component in plan.components:
+        label = _label(component.slot_id)
+        keys = _component_keys(header, plan, component)
+        if not keys:
+            expected = _namespace_for(plan, component) or "the architecture's namespace"
+            errors.append(
+                f"{label}: nothing was written under {expected}, so this "
+                "architecture will not find it when the file is loaded."
+            )
+            continue
+        errors.extend(_dtype_errors(header, keys, component, label))
+
+    if errors:
+        # A file missing a whole namespace cannot reload; attempting it anyway
+        # only buys a confusing exception stacked on a clear one.
+        return OutputValidation(
+            validated=False,
+            errors=tuple(errors),
+            checked_slots=tuple(c.slot_id for c in plan.components),
+        )
+
+    if loader is None:  # pragma: no cover - requires a running Forge
+        from backend.loader import forge_loader as loader
+
+    try:
+        loader(output_path, additional_state_dicts=[])
+    except Exception as exc:
+        errors.append(
+            f"The saved file did not reopen on its own: {exc}. It still needs "
+            "external modules, so it is not a self-contained AIO."
+        )
+
+    return OutputValidation(
+        validated=not errors,
+        errors=tuple(errors),
+        checked_slots=tuple(c.slot_id for c in plan.components),
+    )
+
+
+def _dtype_errors(header, keys, component: ResolvedComponent, label: str) -> list[str]:
+    """Whether the saved dtypes match what was asked for.
+
+    `same` copies whatever the source carried, so without the source header in
+    hand there is nothing to check -- inventing a rule there would fail valid
+    outputs. What `same` *does* guarantee for a scaled component is that its
+    scales came through untouched, and that is checked.
+    """
+    errors: list[str] = []
+    dtypes = {
+        header[key].get("dtype")
+        for key in keys
+        if isinstance(header.get(key), dict)
+    }
+
+    if component.output_format != "same":
+        wanted = _FORMAT_HEADER_CODES.get(component.output_format)
+        if wanted:
+            wrong = {d for d in dtypes if d and d != wanted and d not in ("U8", "I8")}
+            if wrong:
+                errors.append(
+                    f"{label}: asked for {component.output_format}, but the saved "
+                    f"file holds {', '.join(sorted(wrong))}."
+                )
+        return errors
+
+    if "scaled" in (component.source_precision or "") or "mixed" in (
+        component.source_precision or ""
+    ):
+        has_scales = any(
+            key.endswith(("weight_scale", "weight_scale_2")) for key in keys
+        )
+        if not has_scales:
+            errors.append(
+                f"{label}: this component was stored with quantization scales, "
+                "but none were written to the output. Its weights cannot be "
+                "read back without them."
+            )
+    return errors
+
+
 def preflight_component_plan(primary_path: str, plan: ComponentPlan, loader=None):
     """Load the checkpoint with exactly the plan's component files.
 
@@ -561,5 +718,11 @@ def validate_loaded_components(engine, plan: ComponentPlan) -> ComponentPlan:
         dropped_slots=tuple(
             c.slot_id for c in plan.components if c.slot_id not in declared
         ),
+        text_namespace=(
+            profile.text_encoder_key_prefix[0]
+            if profile.text_encoder_key_prefix
+            else ""
+        ),
+        vae_namespace=profile.vae_key_prefix[0] if profile.vae_key_prefix else "",
         slot_order=declared,
     )
