@@ -70,6 +70,135 @@ def _index_by_grouped_key(header: Mapping[str, Any]) -> dict[tuple[int, str], An
     return index
 
 
+# Tensors that carry quantization scaling rather than weights. Casting one of
+# these to fp16 silently wrecks the component it belongs to, and no test
+# downstream would catch it, so they are excluded from every cast -- including
+# the explicit formats that are already refused for scaled components.
+_SCALE_SUFFIXES = ("weight_scale", "weight_scale_2", "scale_weight", "_scale")
+
+#: The output formats a component may be converted to. Anything stored with
+#: scales is `same` only: converting it would mean dequantizing, which this
+#: path does not do.
+PLAIN_COMPONENT_FORMATS = ("same", "fp16", "bf16", "fp32")
+_FORMAT_DTYPE_CODES = {"fp16": "F16", "bf16": "BF16", "fp32": "F32"}
+
+
+def _is_scale_tensor(key: str) -> bool:
+    return any(key.endswith(suffix) for suffix in _SCALE_SUFFIXES)
+
+
+def _castable(tensor, dtype_map, target_code=None):
+    """Whether this tensor may be converted at all."""
+    current = getattr(tensor, "dtype", None)
+    if current is None or not getattr(current, "is_floating_point", False):
+        return None
+    target = dtype_map.get(target_code) if target_code else None
+    if target_code and target is None:
+        return None
+    return target if target_code else current
+
+
+def apply_component_precision(
+    state_dict: MutableMapping[str, Any],
+    component,
+    slot,
+    dtype_map: Mapping[str, Any],
+) -> int:
+    """Set one component's precision, scoped to its own slot and its own file.
+
+    Scoping is what makes this correct rather than merely convenient. Two
+    encoders in one state dict have keys that reduce to the same suffix, so a
+    global index would cast one to the other's dtype. It also keeps the Anima
+    LLM Adapter out of reach: Forge's `process_anima` moves it into the text
+    encoder's bucket at load, but it came from Model A and belongs to the
+    diffusion model, and it does not sit under the encoder's namespace.
+
+    `same` reads the dtype recorded in the component's own header -- never
+    Model A's by proxy, and never the dtype Forge happened to materialise.
+    A component stored with scales is copied untouched, since converting it
+    would mean dequantizing.
+
+    Returns the number of tensors changed.
+    """
+    prefixes = tuple(getattr(slot, "internal_prefixes", ()) or ())
+    if not prefixes:
+        return 0
+
+    keys = [
+        key
+        for key in list(state_dict)
+        if key.startswith(prefixes) and not _is_scale_tensor(key)
+    ]
+    if not keys:
+        return 0
+
+    fmt = getattr(component, "output_format", "same")
+    if fmt != "same":
+        target_code = _FORMAT_DTYPE_CODES.get(fmt)
+        if target_code is None:
+            return 0
+        changed = 0
+        for key in keys:
+            target = _castable(state_dict[key], dtype_map, target_code)
+            if target is None or state_dict[key].dtype == target:
+                continue
+            state_dict[key] = state_dict[key].to(target)
+            changed += 1
+        return changed
+
+    source_path = getattr(component, "path", None)
+    if not source_path:
+        return 0
+    try:
+        header, _ = read_safetensors_header(source_path)
+    except Exception:
+        # A source that cannot be read is a reason to keep the dtypes the
+        # tensors already carry, never a reason to guess at them.
+        return 0
+
+    # Only this component's own keys, matched by name with its namespace
+    # removed from the state-dict side. The source file is standalone, so its
+    # keys carry no such prefix; an embedded component's source is the
+    # checkpoint itself, whose keys carry the architecture's outer prefix too.
+    by_suffix: dict[str, Any] = {}
+    ambiguous: set[str] = set()
+    for key, info in header.items():
+        if key == "__metadata__" or not isinstance(info, dict):
+            continue
+        if _is_scale_tensor(key):
+            continue
+        suffix = key
+        for prefix in prefixes:
+            marker = prefix.rstrip(".")
+            if marker and marker in key:
+                suffix = key.split(marker, 1)[1].lstrip(".")
+                break
+        if suffix in by_suffix:
+            ambiguous.add(suffix)
+        by_suffix[suffix] = info
+    for name in ambiguous:
+        del by_suffix[name]
+
+    changed = 0
+    for key in keys:
+        suffix = key
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                suffix = key[len(prefix):]
+                break
+        info = header.get(key)
+        if not isinstance(info, dict):
+            info = by_suffix.get(suffix)
+        if not isinstance(info, dict):
+            continue
+        target = _castable(state_dict[key], dtype_map, info.get("dtype"))
+        if target is None or state_dict[key].dtype == target:
+            continue
+        state_dict[key] = state_dict[key].to(target)
+        changed += 1
+    return changed
+
+
 def match_source_dtypes(
     state_dict: MutableMapping[str, Any],
     source_path: str,

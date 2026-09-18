@@ -17,6 +17,7 @@ on. Task 5's preflight replaces it with the real thing.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from dataclasses import dataclass, field
 
@@ -66,6 +67,10 @@ class ResolvedComponent:
     signature_id: str
     output_format: str
     source_precision: str
+    #: The namespace this component occupies inside the engine. Carried on
+    #: the component so precision matching can be scoped to it without
+    #: reaching back for the capability profile.
+    internal_prefixes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -102,12 +107,15 @@ def _declared_slots(architecture_id: str, capability_profile):
         policy = apply_policy(capability_profile)
         selectable = tuple(s.forge_target for s in policy.slots if not s.embedded_only)
         embedded_only = tuple(s.forge_target for s in policy.slots if s.embedded_only)
-        return selectable, embedded_only, policy.support
+        prefixes = {s.forge_target: s.internal_prefixes for s in policy.slots}
+        return selectable, embedded_only, policy.support, prefixes
 
     slots = PROVISIONAL_SLOTS.get(architecture_id)
     if slots is None:
-        return (), (), SupportState.UNKNOWN
-    return slots, (), SupportState.SUPPORTED
+        return (), (), SupportState.UNKNOWN, {}
+    # Without an engine the namespaces are unknown too; precision matching
+    # waits for the preflight rather than guessing them.
+    return slots, (), SupportState.SUPPORTED, {}
 
 
 def _readable_embedded(checkpoint_info) -> dict[str, dict]:
@@ -124,7 +132,7 @@ def _label(slot_id: str) -> str:
     return get_slot_policy(slot_id).label
 
 
-def _resolve_file(selection, slot_id, inspect_fn):
+def _resolve_file(selection, slot_id, inspect_fn, internal_prefixes=()):
     path = selection.path
     if not path:
         raise ComponentValidationError(
@@ -151,6 +159,16 @@ def _resolve_file(selection, slot_id, inspect_fn):
             "which cannot be embedded into a safetensors checkpoint."
         )
 
+    # A component stored with scales can only be copied as it is. Converting it
+    # means dequantizing, which this path does not do -- and casting the scale
+    # tensors alongside the weights would quietly wreck the component.
+    if storage != "plain" and selection.output_format != "same":
+        raise ComponentValidationError(
+            f"{_label(slot_id)}: {os.path.basename(path)} is stored as {storage}, "
+            f"so it can only be embedded as-is. {selection.output_format!r} would "
+            "require dequantizing it first, which this path does not do."
+        )
+
     signature = info.get("signature_id")
     accepted = get_slot_policy(slot_id).accepted_signatures
     if signature is None:
@@ -172,10 +190,11 @@ def _resolve_file(selection, slot_id, inspect_fn):
         signature_id=signature,
         output_format=selection.output_format,
         source_precision=str(info.get("precision", "")),
+        internal_prefixes=tuple(internal_prefixes),
     )
 
 
-def _resolve_embedded(selection, slot_id, primary_path, embedded):
+def _resolve_embedded(selection, slot_id, primary_path, embedded, internal_prefixes=()):
     """Keep what the checkpoint carries -- if the loader can actually see it.
 
     A component sitting under a namespace this architecture never reads is in
@@ -207,6 +226,7 @@ def _resolve_embedded(selection, slot_id, primary_path, embedded):
         signature_id=slot_id,
         output_format=selection.output_format,
         source_precision="",
+        internal_prefixes=tuple(internal_prefixes),
     )
 
 
@@ -227,7 +247,7 @@ def build_component_plan(
     if inspect_fn is None:  # pragma: no cover - the real inspector by default
         from aux_inspector import inspect_module as inspect_fn
 
-    selectable, embedded_only, support = _declared_slots(
+    selectable, embedded_only, support, prefixes = _declared_slots(
         architecture_id, capability_profile
     )
     known = set(selectable) | set(embedded_only)
@@ -271,10 +291,13 @@ def build_component_plan(
 
         if selection.source == "embedded":
             resolved[slot_id] = _resolve_embedded(
-                selection, slot_id, primary_path, embedded
+                selection, slot_id, primary_path, embedded,
+                prefixes.get(slot_id, ()),
             )
         else:
-            resolved[slot_id] = _resolve_file(selection, slot_id, inspect_fn)
+            resolved[slot_id] = _resolve_file(
+                selection, slot_id, inspect_fn, prefixes.get(slot_id, ())
+            )
 
     ordered = tuple(slot for slot in selectable if slot in resolved)
     components = tuple(resolved[slot] for slot in ordered)
@@ -371,11 +394,32 @@ def plan_merge_composition(
     )
 
 
-def component_provenance(plan: ComponentPlan | None) -> list[dict]:
+def file_sha256(path: str, chunk_size: int = 1 << 20) -> str:
+    """SHA-256 of a component file, read in chunks.
+
+    Components run to several gigabytes, so the file is streamed rather than
+    read whole. An unreadable file yields an empty hash: provenance without a
+    hash is still useful, and failing a finished merge over it is not.
+    """
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(chunk_size), b""):
+                digest.update(chunk)
+    except OSError:
+        return ""
+    return digest.hexdigest()
+
+
+def component_provenance(plan: ComponentPlan | None, *, with_hashes: bool = False) -> list[dict]:
     """What actually went into the output, for the recipe and the result line.
 
     Records the slot, the file it came from and the precision that file
     carried, so a saved AIO can be traced back to its inputs without guessing.
+
+    Hashing is opt-in because it reads every byte of every component. The
+    interface wants a quick summary; the recipe written into the checkpoint
+    wants the hashes.
     """
     if plan is None:
         return []
@@ -384,6 +428,7 @@ def component_provenance(plan: ComponentPlan | None) -> list[dict]:
             "slot": component.slot_id,
             "label": _label(component.slot_id),
             "name": os.path.basename(component.path) if component.path else "",
+            "sha256": file_sha256(component.path) if with_hashes and component.path else "",
             "source": component.source,
             "signature": component.signature_id,
             "source_precision": component.source_precision,

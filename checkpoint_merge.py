@@ -46,7 +46,7 @@ from forge_capabilities import vae_key_prefix_for_saving
 import anima_remap
 from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from precision_stats import dominant_float_dtype, match_dtype
-from source_precision import try_match_source_dtypes
+from source_precision import apply_component_precision, try_match_source_dtypes
 
 INTERP_NO_INTERPOLATION = "no_interpolation"
 INTERP_WEIGHTED_SUM = "weighted_sum"
@@ -108,6 +108,7 @@ def _build_metadata(
     loras: list[dict] | None = None,
     bake_vae: str | None = None,
     anima_remap: dict | None = None,
+    components: list[dict] | None = None,
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -137,6 +138,10 @@ def _build_metadata(
         # in the recipe that reads like a blend ratio and means nothing.
         if interp_method != INTERP_NO_INTERPOLATION:
             merge_recipe["multiplier"] = multiplier
+        if components:
+            # What went into this AIO, so another run can reconstruct the
+            # same composition instead of inheriting whatever is configured.
+            merge_recipe["components"] = components
         if bake_vae and bake_vae not in ("original", "none", ""):
             merge_recipe["baked_vae"] = os.path.basename(bake_vae)
         elif bake_vae == "none":
@@ -248,6 +253,33 @@ def _compose_modular_primary(primary_info, selections, save_mode, progress_cb):
         raise MergeError(str(e)) from e
 
     return composition, engine_a
+
+
+def _apply_plan_precision(state_dict, plan, kind: str, progress_cb=None) -> int:
+    """Set each selected component's precision, scoped to its own namespace.
+
+    Runs on the internal state dict, before the architecture stamps its save
+    prefix on it. Two encoders in one bucket have keys that reduce to the same
+    suffix, so the slot namespace is what keeps them apart -- and what keeps
+    the Anima LLM Adapter out of reach, since Forge parked it in the encoder's
+    bucket but it belongs to the diffusion model.
+    """
+    if plan is None:
+        return 0
+
+    changed = 0
+    for component in plan.components:
+        want_vae = component.slot_id == "vae"
+        if (kind == "vae") != want_vae:
+            continue
+        if not component.internal_prefixes:
+            continue
+        changed += apply_component_precision(
+            state_dict, component, component, SAFETENSORS_FLOAT_DTYPES
+        )
+    if changed and progress_cb:
+        progress_cb(f"Applied component precision to {changed} tensor(s).")
+    return changed
 
 
 def _guard_anima_block_order(primary_insp, other_insp, fam_primary, fam_other, label):
@@ -732,6 +764,11 @@ def merge_checkpoints(
             if clip_a is not None:
                 clip_sd = utils.get_state_dict_after_quant(clip_a)
                 clip_sd.update(clip_overrides)
+                # Per-component precision runs on the internal state dict,
+                # before the architecture applies its save namespace: the slot
+                # namespaces are the internal ones, and after serialisation
+                # they are gone.
+                _apply_plan_precision(clip_sd, composition.plan, "text_encoder", progress_cb)
                 processed_clip = fix_anima_state_dict_keys(
                     engine_a.model_config.process_clip_state_dict_for_saving(clip_sd)
                 )
@@ -747,6 +784,7 @@ def merge_checkpoints(
             if not is_custom_vae and not strip_vae and vae_a is not None:
                 vae_sd = utils.get_state_dict_after_quant(vae_a)
                 vae_sd.update(vae_overrides)
+                _apply_plan_precision(vae_sd, composition.plan, "vae", progress_cb)
                 processed_vae = engine_a.model_config.process_vae_state_dict_for_saving(vae_sd)
                 vae_output_keys.update(processed_vae)
                 sd.update(processed_vae)
@@ -834,6 +872,7 @@ def merge_checkpoints(
                 loras=applied_loras if applied_loras else None,
                 bake_vae=bake_vae,
                 anima_remap=anima_remap_note,
+                components=component_provenance(composition.plan, with_hashes=True),
             )
         )
 
