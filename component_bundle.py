@@ -21,6 +21,7 @@ import os
 from dataclasses import dataclass, field
 
 from component_registry import SupportState, apply_policy, get_slot_policy
+from forge_capabilities import ForgeCapabilityError
 
 #: Only what a header can pin down on its own. Everything else waits for the
 #: capability probe -- see `checkpoint_inspector.infer_architecture_id`, which
@@ -74,8 +75,20 @@ class ComponentPlan:
     components: tuple[ResolvedComponent, ...] = ()
     additional_state_dicts: tuple[str, ...] = ()
     capability_fingerprint: str | None = None
+    #: Slots the architecture declares that nobody filled. The user needs to
+    #: pick a file for each.
     missing_slots: tuple[str, ...] = ()
+    #: Slots that *were* filled and that the reloaded engine no longer
+    #: declares -- the selected file was handed to Forge and did not take.
+    #: Kept apart from `missing_slots` because "select a text encoder" is the
+    #: wrong advice for someone who already did.
+    dropped_slots: tuple[str, ...] = ()
     slot_order: tuple[str, ...] = field(default=())
+
+    @property
+    def is_complete(self) -> bool:
+        """Whether this composition can be saved as an AIO."""
+        return not self.missing_slots and not self.dropped_slots
 
 
 def _declared_slots(architecture_id: str, capability_profile):
@@ -278,4 +291,115 @@ def build_component_plan(
         ),
         missing_slots=tuple(slot for slot in selectable if slot not in resolved),
         slot_order=tuple(selectable),
+    )
+
+
+def preflight_component_plan(primary_path: str, plan: ComponentPlan, loader=None):
+    """Load the checkpoint with exactly the plan's component files.
+
+    Nothing else goes in. `shared.opts.forge_additional_modules` is never read
+    here -- that implicit dependency is the problem this whole feature exists to
+    remove, and a preflight that quietly inherited it would validate a
+    composition the output cannot reproduce.
+
+    Returns the loaded engine. The Forge import happens inside the
+    `loader is None` branch on purpose: the unit suite runs outside an
+    initialised Forge, and importing the loader at module scope would make this
+    module untestable.
+    """
+    if loader is None:  # pragma: no cover - requires a running Forge
+        from backend.loader import forge_loader as loader
+
+    files = list(plan.additional_state_dicts)
+    try:
+        return loader(primary_path, additional_state_dicts=files)
+    except Exception as exc:
+        selected = ", ".join(os.path.basename(f) for f in files) or "no external files"
+        raise ComponentValidationError(
+            f"Forge could not load this {plan.architecture_id} composition "
+            f"({selected}): {exc}"
+        ) from exc
+
+
+def _loaded_object(engine, name: str):
+    objects = getattr(engine, "forge_objects", None)
+    if objects is None:
+        raise ComponentValidationError(
+            "The loaded engine exposes no 'forge_objects', so its components "
+            "cannot be verified. This is not an engine this path can validate."
+        )
+    return getattr(objects, name, None)
+
+
+def validate_loaded_components(engine, plan: ComponentPlan) -> ComponentPlan:
+    """Reconcile a provisional plan against what Forge actually resolved.
+
+    The loaded engine is the authority. Whatever the header guessed is replaced
+    here, and two failure shapes are told apart deliberately:
+
+    * a capability the config no longer exposes, or an engine that came back as
+      a different architecture, is an error -- something drifted;
+    * a slot the reloaded `clip_target` simply stopped declaring is *missing*,
+      not an error. Forge does not raise when a component was not supplied; it
+      returns one target fewer, in silence. That silence is the most likely way
+      a broken AIO would slip through, so it is turned into data the caller can
+      act on.
+
+    Returns the reconciled plan. (The first draft of this contract returned
+    None and raised on everything; missing slots are data, so they need to come
+    back rather than blow up.)
+    """
+    from forge_capabilities import capability_profile_from_engine, is_anima_profile
+
+    try:
+        profile = capability_profile_from_engine(engine)
+    except ForgeCapabilityError as exc:
+        raise ComponentValidationError(
+            f"The loaded engine no longer exposes a capability this composition "
+            f"needs: {exc}"
+        ) from exc
+
+    if plan.architecture_id == "anima" and not is_anima_profile(profile):
+        raise ComponentValidationError(
+            f"The header read this checkpoint as Anima, but the engine Forge "
+            f"loaded reports {profile.family_hint or 'another architecture'} "
+            f"({profile.diagnostic_fingerprint}). Refusing to compose against a "
+            "mismatched architecture."
+        )
+
+    policy = apply_policy(profile)
+    declared = tuple(s.forge_target for s in policy.slots if not s.embedded_only)
+
+    if any(s.kind == "text_encoder" for s in policy.slots):
+        if _loaded_object(engine, "clip") is None:
+            raise ComponentValidationError(
+                "Forge loaded no text encoder for this composition. The selected "
+                "file may sit under a namespace this architecture does not read."
+            )
+    if profile.vae_target is not None and _loaded_object(engine, "vae") is None:
+        raise ComponentValidationError(
+            "Forge loaded no VAE for this composition. The selected file may sit "
+            "under a namespace this architecture does not read."
+        )
+
+    # Only components whose slot survived the reload stay in the plan. A slot
+    # that vanished took the user's file with it, which Forge did not announce.
+    kept = tuple(c for c in plan.components if c.slot_id in declared)
+    order = {slot: i for i, slot in enumerate(declared)}
+    kept = tuple(sorted(kept, key=lambda c: order[c.slot_id]))
+    filled = {c.slot_id for c in kept}
+
+    return ComponentPlan(
+        architecture_id=plan.architecture_id,
+        support=policy.support,
+        components=kept,
+        additional_state_dicts=tuple(
+            c.path for c in kept if c.source == "file"
+        ),
+        capability_fingerprint=profile.semantic_fingerprint,
+        missing_slots=tuple(slot for slot in declared if slot not in filled),
+        dropped_slots=tuple(
+            c.slot_id for c in plan.components if c.slot_id not in declared
+        ),
+        slot_order=declared,
     )

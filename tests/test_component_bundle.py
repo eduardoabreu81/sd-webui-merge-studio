@@ -20,6 +20,8 @@ from component_bundle import (  # noqa: E402
     ComponentSelection,
     ComponentValidationError,
     build_component_plan,
+    preflight_component_plan,
+    validate_loaded_components,
 )
 from component_registry import SupportState  # noqa: E402
 from forge_capabilities import capability_profile_from_engine  # noqa: E402
@@ -534,10 +536,275 @@ class ProvisionalPlanTests(unittest.TestCase):
             )
 
 
+def loaded_engine(clip_target, *, clip=object(), vae=object(), **kw):
+    """An engine as it looks after `split_state_dict` has run.
+
+    `clip_target` is a resolved dict by then, and `forge_objects` carries what
+    the loader actually built. A bucket that came back empty shows up as None.
+    """
+    eng = engine(clip_target, **kw)
+    eng.forge_objects = type("ForgeObjects", (), {"clip": clip, "vae": vae})()
+    return eng
+
+
+def recording_loader(engine_to_return, calls):
+    def loader(path, additional_state_dicts):
+        calls.append((path, tuple(additional_state_dicts)))
+        return engine_to_return
+
+    return loader
+
+
+class PreflightCallTests(unittest.TestCase):
+    def test_only_the_plans_own_files_are_passed(self):
+        calls = []
+        eng = loaded_engine(ANIMA)
+        built = plan(anima_complete(), files=ANIMA_FILES)
+
+        returned = preflight_component_plan(
+            "A.safetensors", built, loader=recording_loader(eng, calls)
+        )
+
+        self.assertIs(eng, returned)
+        self.assertEqual([("A.safetensors", built.additional_state_dicts)], calls)
+
+    def test_an_all_embedded_plan_loads_with_an_empty_external_list(self):
+        calls = []
+        info = {
+            "embedded_components": (
+                {"kind": "text_encoder", "role": "qwen3_06b", "readable": True},
+                {"kind": "vae", "role": "vae", "readable": True},
+            )
+        }
+        built = plan(
+            [
+                ComponentSelection("qwen3_06b", "embedded"),
+                ComponentSelection("vae", "embedded"),
+            ],
+            files={},
+            info=info,
+        )
+        preflight_component_plan(
+            "A.safetensors", built, loader=recording_loader(loaded_engine(ANIMA), calls)
+        )
+        self.assertEqual([("A.safetensors", ())], calls)
+
+    def test_the_global_module_list_is_never_consulted(self):
+        """The whole point of the feature: what goes in is what was chosen."""
+        seen = {}
+
+        def loader(path, additional_state_dicts, **extra):
+            seen.update(extra)
+            seen["files"] = tuple(additional_state_dicts)
+            return loaded_engine(ANIMA)
+
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        preflight_component_plan("A.safetensors", built, loader=loader)
+        self.assertEqual(built.additional_state_dicts, seen["files"])
+        self.assertEqual({}, {k: v for k, v in seen.items() if k != "files"})
+
+    def test_a_loader_failure_is_wrapped_with_context_and_keeps_its_cause(self):
+        original = RuntimeError("size mismatch for text_encoders.qwen3_06b")
+
+        def loader(path, additional_state_dicts):
+            raise original
+
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        with self.assertRaises(ComponentValidationError) as ctx:
+            preflight_component_plan("A.safetensors", built, loader=loader)
+
+        message = str(ctx.exception)
+        self.assertIn("anima", message.lower())
+        self.assertIn("qwen.safetensors", message)
+        self.assertIn("size mismatch", message)
+        self.assertIs(original, ctx.exception.__cause__)
+
+
+class ReconciliationTests(unittest.TestCase):
+    """What Forge resolved wins over what the header guessed."""
+
+    def setUp(self):
+        self.built = plan(anima_complete(), files=ANIMA_FILES)
+
+    def test_a_matching_engine_confirms_the_plan(self):
+        result = validate_loaded_components(loaded_engine(ANIMA), self.built)
+        self.assertEqual((), result.missing_slots)
+        self.assertEqual(("qwen3_06b", "vae"), tuple(c.slot_id for c in result.components))
+
+    def test_the_fingerprint_is_refreshed_from_the_loaded_engine(self):
+        eng = loaded_engine(ANIMA)
+        result = validate_loaded_components(eng, self.built)
+        self.assertEqual(
+            capability_profile_from_engine(eng).semantic_fingerprint,
+            result.capability_fingerprint,
+        )
+
+    def test_a_renamed_config_class_still_reconciles(self):
+        eng = loaded_engine(ANIMA)
+        eng.model_config.__class__.__name__ = "AnimaRenamedUpstream"
+        result = validate_loaded_components(eng, self.built)
+        self.assertEqual((), result.missing_slots)
+
+    def test_a_future_config_reconciles_without_a_registry_entry(self):
+        eng = loaded_engine(
+            {"nova_text.transformer": "text_encoder"},
+            image_model="nova_image",
+            repo="nova/Nova-Image-V7",
+        )
+        built = build_component_plan(
+            "unknown",
+            "A.safetensors",
+            {},
+            [ComponentSelection("nova_text", "file", "nova.safetensors")],
+            capability_profile=capability_profile_from_engine(eng),
+            inspect_fn=inspector({"nova.safetensors": module_info("nova_text")}),
+        )
+        result = validate_loaded_components(eng, built)
+        self.assertEqual(("vae",), result.missing_slots)
+
+    def test_a_drifted_capability_contract_names_what_is_missing(self):
+        eng = loaded_engine(ANIMA)
+        del eng.model_config.__class__.vae_key_prefix
+        with self.assertRaises(ComponentValidationError) as ctx:
+            validate_loaded_components(eng, self.built)
+        self.assertIn("vae_key_prefix", str(ctx.exception))
+
+    def test_an_architecture_disagreement_is_refused(self):
+        """The header said Anima; the engine that came back is not."""
+        eng = loaded_engine(
+            {"qwen3_4b.transformer": "text_encoder"},
+            image_model="lumina2",
+            repo="Tongyi-MAI/Z-Image-Turbo",
+            latent="Flux",
+        )
+        with self.assertRaises(ComponentValidationError) as ctx:
+            validate_loaded_components(eng, self.built)
+        self.assertIn("anima", str(ctx.exception).lower())
+
+
+class SilentlyDroppedSlotTests(unittest.TestCase):
+    """`clip_target` is state-dict-conditional for Flux, Chroma, Lumina2 and
+    QwenImage, and is evaluated after the additional state dicts are merged.
+    Supply no CLIP-L and Forge returns one target fewer -- it does not raise.
+    That silence is the most likely way a broken AIO would slip through."""
+
+    def test_a_target_that_stopped_being_declared_becomes_missing(self):
+        files = {
+            "clip.safetensors": module_info("clip_l"),
+            "t5.safetensors": module_info("t5xxl"),
+            "ae.safetensors": module_info("vae"),
+        }
+        built = plan(
+            [
+                ComponentSelection("clip_l", "file", "clip.safetensors"),
+                ComponentSelection("t5xxl", "file", "t5.safetensors"),
+                ComponentSelection("vae", "file", "ae.safetensors"),
+            ],
+            profile=flux_profile(),
+            files=files,
+            architecture_id="unknown",
+        )
+        self.assertEqual((), built.missing_slots)
+
+        # Forge came back declaring only T5: the CLIP-L it was handed did not
+        # satisfy the condition, so the slot quietly vanished.
+        eng = loaded_engine(
+            {"t5xxl": "text_encoder"},
+            image_model="flux",
+            latent="Flux",
+            repo="black-forest-labs/FLUX.1-dev",
+        )
+        result = validate_loaded_components(eng, built)
+        self.assertIn("clip_l", result.dropped_slots)
+
+    def test_a_dropped_slot_is_not_reported_as_merely_unfilled(self):
+        """"Select a text encoder" is the wrong advice for someone who did.
+        The file was handed to Forge and did not take."""
+        files = {
+            "clip.safetensors": module_info("clip_l"),
+            "t5.safetensors": module_info("t5xxl"),
+            "ae.safetensors": module_info("vae"),
+        }
+        built = plan(
+            [
+                ComponentSelection("clip_l", "file", "clip.safetensors"),
+                ComponentSelection("t5xxl", "file", "t5.safetensors"),
+                ComponentSelection("vae", "file", "ae.safetensors"),
+            ],
+            profile=flux_profile(),
+            files=files,
+            architecture_id="unknown",
+        )
+        eng = loaded_engine(
+            {"t5xxl": "text_encoder"},
+            image_model="flux",
+            latent="Flux",
+            repo="black-forest-labs/FLUX.1-dev",
+        )
+        result = validate_loaded_components(eng, built)
+        self.assertNotIn("clip_l", result.missing_slots)
+        self.assertFalse(result.is_complete)
+
+    def test_the_component_for_a_dropped_slot_is_not_kept_in_the_plan(self):
+        files = {
+            "clip.safetensors": module_info("clip_l"),
+            "t5.safetensors": module_info("t5xxl"),
+            "ae.safetensors": module_info("vae"),
+        }
+        built = plan(
+            [
+                ComponentSelection("clip_l", "file", "clip.safetensors"),
+                ComponentSelection("t5xxl", "file", "t5.safetensors"),
+                ComponentSelection("vae", "file", "ae.safetensors"),
+            ],
+            profile=flux_profile(),
+            files=files,
+            architecture_id="unknown",
+        )
+        eng = loaded_engine(
+            {"t5xxl": "text_encoder"},
+            image_model="flux",
+            latent="Flux",
+            repo="black-forest-labs/FLUX.1-dev",
+        )
+        result = validate_loaded_components(eng, built)
+        self.assertNotIn("clip_l", [c.slot_id for c in result.components])
+
+
+class LoadedObjectTests(unittest.TestCase):
+    def test_an_absent_text_encoder_object_is_refused(self):
+        """A checkpoint whose encoder sits under a foreign namespace leaves
+        Forge with an empty bucket -- present in the file, absent in memory."""
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        with self.assertRaises(ComponentValidationError) as ctx:
+            validate_loaded_components(loaded_engine(ANIMA, clip=None), built)
+        self.assertIn("text encoder", str(ctx.exception).lower())
+
+    def test_an_absent_vae_object_is_refused(self):
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        with self.assertRaises(ComponentValidationError) as ctx:
+            validate_loaded_components(loaded_engine(ANIMA, vae=None), built)
+        self.assertIn("vae", str(ctx.exception).lower())
+
+    def test_an_engine_without_forge_objects_is_refused_clearly(self):
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        with self.assertRaises(ComponentValidationError):
+            validate_loaded_components(engine(ANIMA), built)
+
+
 class ModuleHygieneTests(unittest.TestCase):
     def test_importing_the_module_does_not_pull_in_forge_or_gradio(self):
         for banned in ("backend", "backend.loader", "gradio", "modules_forge"):
             self.assertNotIn(banned, sys.modules)
+
+    def test_preflight_only_reaches_for_forge_when_no_loader_is_injected(self):
+        """The unit suite runs outside an initialised Forge, so the import has
+        to live inside the `loader is None` branch."""
+        built = plan(anima_complete(), files=ANIMA_FILES)
+        preflight_component_plan(
+            "A.safetensors", built, loader=lambda p, additional_state_dicts: loaded_engine(ANIMA)
+        )
+        self.assertNotIn("backend.loader", sys.modules)
 
 
 if __name__ == "__main__":
