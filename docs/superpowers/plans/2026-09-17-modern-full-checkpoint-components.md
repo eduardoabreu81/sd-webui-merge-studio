@@ -984,11 +984,14 @@ git commit -m "feat: compose modern full checkpoints"
 **Interfaces:**
 
 - Produces: `apply_component_precision(state_dict, component, slot, dtype_map) -> int`.
-- Produces: `build_component_provenance(plan) -> list[dict]`.
+- Produces: `component_provenance(plan, *, with_hashes=False) -> list[dict]`.
+  Named without the `build_` prefix, and hashing is opt-in: it reads every byte of
+  several gigabytes, which the interface's summary does not need and the saved recipe
+  does.
 - Extends: `_build_metadata(..., components: list[dict] | None = None)`.
 - Keeps: existing `match_source_dtypes` behavior for diffusion and traditional VAE paths.
 
-- [ ] **Step 1: Write failing precision-isolation tests**
+- [x] **Step 1: Write failing precision-isolation tests**
 
 Test each selected component against its own physical source:
 
@@ -1038,7 +1041,7 @@ qwen_3_4b_fp4_mixed   : 247 F8_E4M3 + 247 F32 weight_scale_2 + 436 U8 + 151 BF16
 qwen_3_06b_base       : 310 BF16 (Anima's official encoder is plain)
 ```
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run:
 
@@ -1048,7 +1051,7 @@ python -m unittest discover -s tests -p "test_source_precision.py" -v
 python -m unittest discover -s tests -p "test_checkpoint_recipe.py" -v
 ```
 
-- [ ] **Step 3: Implement role-scoped matching before namespace serialization**
+- [x] **Step 3: Implement role-scoped matching before namespace serialization**
 
 Apply component precision to the internal `clip_sd`/`vae_sd` produced by Forge before `process_*_state_dict_for_saving`. Strip only the selected slot's declared internal prefix when matching a standalone source header. Never use a global suffix index across components.
 
@@ -1058,7 +1061,7 @@ means bit-exact copy (D1). Existing diffusion-model format choices remain unchan
 
 Calculate SHA-256 by streaming the file in fixed-size chunks. Record embedded components against the primary checkpoint path and explicit components against their selected paths.
 
-- [ ] **Step 4: Write provenance into `sd_merge_recipe`**
+- [x] **Step 4: Write provenance into `sd_merge_recipe`**
 
 Use one stable field:
 
@@ -1079,7 +1082,7 @@ Use one stable field:
 }
 ```
 
-- [ ] **Step 5: Run focused and full suites**
+- [x] **Step 5: Run focused and full suites**
 
 Run:
 
@@ -1090,7 +1093,7 @@ python -m unittest discover -s tests -p "test_checkpoint_recipe.py" -v
 python -m unittest discover -s tests -v
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add source_precision.py component_bundle.py checkpoint_merge.py tests/test_component_precision.py tests/test_source_precision.py tests/test_checkpoint_recipe.py
