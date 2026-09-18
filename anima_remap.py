@@ -168,7 +168,61 @@ def block_count(diffusion_model) -> int | None:
 
 
 def is_anima_engine(engine) -> bool:
-    return type(engine.model_config).__name__ == "Anima"
+    """Anima by what the config declares, never by its Python class name.
+
+    Forge renames and adds configs; it decides this itself with
+    `"Anima" in guess.huggingface_repo`, so reading the same declarations means
+    this breaks exactly when Forge breaks, never a release earlier.
+    """
+    try:
+        from forge_capabilities import capability_profile_from_engine, is_anima_profile
+
+        return is_anima_profile(capability_profile_from_engine(engine))
+    except Exception:
+        # An engine that cannot even be profiled is not one this path handles.
+        return False
+
+
+def target_to_source_from_manifest(manifest, src_blocks: int, dst_blocks: int):
+    """Rebuild the full target -> source list from a release's own manifest.
+
+    Both official expansions ship the map they were built with: Anima-2.9B in
+    `expand_manifest.json`, Anima-3.8B in its safetensors metadata, each as an
+    `inserted_to_source` mapping of only the *inserted* positions. Every other
+    target block takes the next source block in order, which is what makes the
+    partial map sufficient.
+
+    Reading it means a future generation works without editing the vendored
+    tables. Returns None whenever the manifest cannot be trusted -- a partial
+    or malformed map is refused rather than patched up, because a silently
+    wrong block mapping corrupts a merge in a way no test downstream would
+    catch.
+    """
+    if not isinstance(manifest, dict) or not manifest:
+        return None
+
+    inserted: dict[int, int] = {}
+    try:
+        for key, value in manifest.items():
+            inserted[int(key)] = int(value)
+    except (TypeError, ValueError):
+        return None
+
+    if len(inserted) != dst_blocks - src_blocks:
+        return None
+
+    mapping: list[int] = []
+    next_source = 0
+    for target in range(dst_blocks):
+        if target in inserted:
+            mapping.append(inserted[target])
+        else:
+            mapping.append(next_source)
+            next_source += 1
+
+    if next_source != src_blocks or any(s >= src_blocks for s in mapping):
+        return None
+    return mapping
 
 
 def make_extend_translator(inserted: dict[int, int]):

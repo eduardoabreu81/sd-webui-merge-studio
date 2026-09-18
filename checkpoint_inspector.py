@@ -89,6 +89,139 @@ def _detect_architecture(
     return "Diffusion Model"
 
 
+# Stable ids for the architectures a header can pin down on its own. This is a
+# provisional hint for the interface: the authority is the capability profile
+# derived from a loaded engine, which replaces whatever is decided here.
+#
+# Deliberately conservative. Picking the wrong family picks the wrong component
+# slots, so anything ambiguous stays "unknown" and waits for the runtime probe.
+ARCH_UNKNOWN = "unknown"
+
+# Which namespaces each architecture's components must occupy to be read at
+# all. Forge filters on `text_encoder_key_prefix` and `vae_key_prefix`, and
+# quietly discards everything else, so a component under the wrong prefix is
+# present in the file and invisible to the loader.
+_MODERN_NAMESPACES = ("text_encoders.", "vae.")
+_TRADITIONAL_NAMESPACES = ("cond_stage_model.", "first_stage_model.")
+
+_ARCH_NAMESPACES = {
+    "anima": _MODERN_NAMESPACES,
+    "sdxl": _TRADITIONAL_NAMESPACES,
+    "sd15": _TRADITIONAL_NAMESPACES,
+    "sd3": _TRADITIONAL_NAMESPACES,
+}
+
+_TEXT_ENCODER_NAMESPACES = (
+    "text_encoders.",
+    "cond_stage_model.",
+    "conditioner.embedders.",
+)
+_VAE_NAMESPACES = ("vae.", "first_stage_model.")
+
+
+def infer_architecture_id(header: dict[str, Any], filename: str = "") -> str:
+    """A stable architecture id from the header, or ``"unknown"``.
+
+    Only diffusion-model evidence votes. An embedded text encoder says nothing
+    about which denoiser a file holds -- reading Qwen keys as proof of Anima is
+    how an arbitrary model used to be mislabelled.
+
+    A filename may refine a family that already matches, but it can never
+    promote ``unknown`` into a named architecture.
+    """
+    keys = [k for k in header if k != "__metadata__"]
+    if not keys:
+        return ARCH_UNKNOWN
+
+    def diffusion(*fragments):
+        return any(
+            any(k.startswith(p + f) for p in ("model.diffusion_model.", "net.", ""))
+            for f in fragments
+            for k in keys
+        )
+
+    # The LLM Adapter is unique to Anima among everything Forge loads.
+    if any("llm_adapter" in k for k in keys):
+        return "anima"
+
+    if diffusion("joint_blocks."):
+        return "sd3"
+
+    if any(k.startswith("conditioner.embedders.") for k in keys):
+        return "sdxl"
+
+    if diffusion("input_blocks."):
+        # SDXL dropped the third downsampling stage; SD 1.x kept it.
+        has_stage_3 = any(
+            f"input_blocks.{i}." in k for k in keys for i in (9, 10, 11)
+        )
+        return "sd15" if has_stage_3 else "sdxl"
+
+    # Everything below is a DiT of some kind, and the header cannot say which.
+    # Flux 1, Flux 2 Klein and Chroma all differ in the slots they need, so
+    # naming one of them here would pick the wrong components.
+    return ARCH_UNKNOWN
+
+
+def embedded_components_from_keys(keys, architecture_id: str = ARCH_UNKNOWN):
+    """What this file carries besides its diffusion model, and whether Forge
+    will actually read it.
+
+    Three separate facts per component, none of them hidden:
+
+    * ``role``      -- what it is, e.g. ``qwen3_06b``
+    * ``namespace`` -- the prefix it sits under in this file
+    * ``readable``  -- whether the architecture declares that prefix
+
+    The last one matters because a checkpoint can carry a perfectly good
+    encoder under a namespace its own architecture never looks at. Measured
+    across the reference library, only 2 of 222 checkpoints embed components
+    where their architecture would find them. That is a fact about the file,
+    not something to correct -- another runtime may well read it.
+    """
+    expected = _ARCH_NAMESPACES.get(architecture_id)
+    found: dict[str, dict[str, Any]] = {}
+
+    for key in keys:
+        # The connector belongs to the diffusion model, not to a component.
+        if "anima_v2_connector" in key:
+            continue
+
+        for namespace in _TEXT_ENCODER_NAMESPACES:
+            if key.startswith(namespace):
+                found.setdefault(
+                    "text_encoder",
+                    {
+                        "kind": "text_encoder",
+                        "namespace": namespace,
+                        "role": key[len(namespace) :].split(".", 1)[0] or None,
+                    },
+                )
+                break
+        else:
+            for namespace in _VAE_NAMESPACES:
+                if key.startswith(namespace):
+                    found.setdefault(
+                        "vae",
+                        {"kind": "vae", "namespace": namespace, "role": "vae"},
+                    )
+                    break
+
+    order = {"text_encoder": 0, "vae": 1}
+    components = []
+    for kind in sorted(found, key=lambda k: order.get(k, 9)):
+        component = found[kind]
+        wanted = None
+        if expected is not None:
+            wanted = expected[0] if kind == "text_encoder" else expected[1]
+        component["expected_namespace"] = wanted
+        component["readable"] = (
+            None if wanted is None else component["namespace"] == wanted
+        )
+        components.append(component)
+    return tuple(components)
+
+
 def get_model_family(arch: str) -> str:
     """Returns the base architecture family for compatibility verification."""
     if not arch:
@@ -408,6 +541,7 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
 
     filename = os.path.basename(filepath)
     arch = _detect_architecture(keys, has_llm_adapter, metadata=metadata, filename=filename)
+    architecture_id = infer_architecture_id(header, filename)
     precision = _detect_precision(header, filepath, data_offset)
 
     # Parse sd_merge_recipe if present
@@ -441,15 +575,24 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         "file_size": file_size,
         "size_str": size_str,
         "architecture": arch,
+        # A stable id for code, next to the human-readable label above. It is a
+        # provisional hint -- a loaded engine's capability profile overrides it.
+        "architecture_id": architecture_id,
         "block_count": block_count_from_keys(keys),
         "precision": precision,
         "total_tensors": len(keys),
+        # A coarse presence summary, kept for the dashboards. It answers "are
+        # these tensors in the file", which is not the same question as "will
+        # the loader read them" -- see embedded_components below.
         "components": {
             "unet": has_unet,
             "clip": has_clip,
             "vae": has_vae,
             "llm_adapter": has_llm_adapter,
         },
+        # What each embedded component actually is, which namespace it occupies,
+        # and whether this architecture declares that namespace.
+        "embedded_components": embedded_components_from_keys(keys, architecture_id),
         "recipe": recipe,
         "comfy_recipe": comfy_recipe,
         "models": models,
@@ -741,18 +884,53 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         clip_note = "Embedded CLIP text encoder"
     vae_note = "Embedded autoencoder"
 
+    # A component under a namespace this architecture never looks at is in the
+    # file and invisible to the loader, which then falls back to whatever is
+    # configured globally. Saying "Present" and stopping there would be true
+    # and misleading at once, so the namespace is named alongside it.
+    embedded = info.get("embedded_components") or ()
+    unreadable = {c["kind"]: c for c in embedded if c.get("readable") is False}
+
+    def _component_note(kind: str, default: str) -> str:
+        stray = unreadable.get(kind)
+        if stray is None:
+            return default
+        return f"in {stray['namespace']} — not read by this architecture"
+
     comp_pills = []
     if comps.get("unet"):
         comp_pills.append(_comp_pill(model_name, unet_note))
     if comps.get("clip"):
-        comp_pills.append(_comp_pill(te_pill_label, clip_note))
+        comp_pills.append(
+            _comp_pill(te_pill_label, _component_note("text_encoder", clip_note))
+        )
     if comps.get("vae"):
-        comp_pills.append(_comp_pill("VAE (Autoencoder)", vae_note))
+        comp_pills.append(
+            _comp_pill("VAE (Autoencoder)", _component_note("vae", vae_note))
+        )
     if comps.get("llm_adapter"):
         comp_pills.append(_comp_pill("Anima LLM Adapter", "Embedded DiT alignment weights"))
 
     if not comp_pills:
         comp_pills.append("<div style='padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); color: #ef4444;'>No standard neural components detected in file header.</div>")
+
+    if unreadable:
+        expected = next(
+            (c.get("expected_namespace") for c in unreadable.values() if c.get("expected_namespace")),
+            None,
+        )
+        names = ", ".join(
+            _esc(c["namespace"]) for c in unreadable.values()
+        )
+        comp_pills.append(
+            "<div style='grid-column: 1 / -1; padding: 8px 12px; border-radius: 6px; "
+            "background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24;'>"
+            f"<b>Heads up:</b> this file stores components under {names}, but "
+            f"{_esc(arch)} reads {_esc(expected or 'a different namespace')}. "
+            "Forge will ignore them and use whatever is set in Additional Modules. "
+            "The tensors are still in the file, so another runtime may read them."
+            "</div>"
+        )
 
     comp_grid_html = "".join(comp_pills)
 

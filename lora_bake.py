@@ -20,6 +20,7 @@ from modules import shared
 
 from aux_inspector import embedded_activation_text
 from checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
+from forge_capabilities import vae_key_prefix_for_saving
 from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
 from precision_stats import dominant_float_dtype, match_dtype
 from source_precision import try_match_source_dtypes
@@ -347,14 +348,17 @@ def bake_lora_into_checkpoint(
             if vae_output_format in PLAIN_FORMATS:
                 target_dt = PLAIN_FORMATS[vae_output_format]
                 custom_vae_sd = {k: (v.to(target_dt) if hasattr(v, "to") else v) for k, v in custom_vae_sd.items()}
-            if hasattr(engine, "model_config") and hasattr(engine.model_config, "process_vae_state_dict_for_saving"):
+            config = getattr(engine, "model_config", None)
+            processed_vae = None
+            if hasattr(config, "process_vae_state_dict_for_saving"):
                 try:
-                    processed_vae = engine.model_config.process_vae_state_dict_for_saving(custom_vae_sd)
+                    processed_vae = config.process_vae_state_dict_for_saving(custom_vae_sd)
                 except Exception:
-                    prefix = "first_stage_model." if "SDXL" in type(engine.model_config).__name__ or "SD1" in type(engine.model_config).__name__ else "vae."
-                    processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
-            else:
-                prefix = "first_stage_model."
+                    processed_vae = None
+            if processed_vae is None:
+                # The architecture declares its own VAE namespace; read it from
+                # there rather than testing the config's class name.
+                prefix = vae_key_prefix_for_saving(config)
                 processed_vae = {f"{prefix}{k}": v for k, v in custom_vae_sd.items()}
             sd.update(processed_vae)
 

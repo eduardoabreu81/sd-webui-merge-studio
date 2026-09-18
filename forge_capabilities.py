@@ -234,6 +234,25 @@ def capability_profile_from_engine(engine) -> ForgeCapabilityProfile:
     )
 
 
+def vae_key_prefix_for_saving(model_config, default: str = "first_stage_model.") -> str:
+    """The namespace this architecture writes its VAE under.
+
+    Used as the fallback when `process_vae_state_dict_for_saving` refuses a
+    hand-built state dict. The prefix is declared by the config itself, so a
+    renamed or newly added architecture lands in the right namespace without a
+    name check here.
+    """
+    prefixes = getattr(model_config, "vae_key_prefix", None)
+    if not prefixes:
+        return default
+    if isinstance(prefixes, str):
+        return prefixes
+    try:
+        return prefixes[0]
+    except (IndexError, TypeError):
+        return default
+
+
 def is_anima_profile(profile: ForgeCapabilityProfile) -> bool:
     """Anima by structural evidence, never by Python class name.
 
