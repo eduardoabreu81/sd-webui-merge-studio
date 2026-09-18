@@ -1196,6 +1196,17 @@ git commit -m "feat: validate aio outputs by independent reload"
 
 ### Task 9: Component UI without Forge-side effects
 
+> **The `@gr.render` spike did not happen, and could not.** Running Forge is the only
+> way to try it, and that is not possible from here. The pre-allocated rows the
+> codebase already uses for LoRAs were taken instead: the realistic maximum is three
+> rows, so the dynamic API bought nothing that justified a new paradigm in this file.
+>
+> **`scripts/merge_studio_ui.py` is unverified.** It imports Gradio and the WebUI's
+> `modules`, so it cannot be imported, let alone exercised, outside Forge. What was
+> checked statically: it parses, every helper exists, no name is used before it is
+> defined, and the `inputs` list matches the handler's arity (18 fixed + 29 variadic).
+> Whether it renders correctly is Task 10's smoke test.
+
 > **Revised to the D6 model.** Two options per row, no auto-fill, hard block when a declared
 > slot has no selection. The row set is small: the realistic maximum is three (Flux).
 
@@ -1220,7 +1231,7 @@ Text Encoder   ( ) Keep what is in the file        <- only when the ENGINE loade
 
 There is no `None` entry in AIO mode (D6).
 
-- [ ] **Step 1: Write failing pure UI-state tests**
+- [x] **Step 1: Write failing pure UI-state tests**
 
 Assert:
 
@@ -1262,11 +1273,11 @@ def test_missing_slot_message_names_what_is_missing(self):
 - for Flux, the message names which of the two encoders is missing;
 - parsing produces the exact `ComponentSelection` dictionaries accepted by `merge_checkpoints`.
 
-- [ ] **Step 2: Run focused tests and verify red**
+- [x] **Step 2: Run focused tests and verify red**
 
 Run: `python -m unittest discover -s tests -p "test_component_ui.py" -v`
 
-- [ ] **Step 3: Implement pure UI-state functions**
+- [x] **Step 3: Implement pure UI-state functions**
 
 `component_ui.py` must not import Gradio or Forge. It receives already-inspected module dictionaries and returns plain dataclasses/dicts.
 
@@ -1281,7 +1292,7 @@ COMPONENT_FORMAT_CHOICES = (
 )
 ```
 
-- [ ] **Step 4: Wire capability-driven Gradio rows**
+- [x] **Step 4: Wire capability-driven Gradio rows**
 
 In `create_merge_studio_tab()`:
 
@@ -1308,7 +1319,7 @@ may not have. **Run that spike before committing to the dynamic API**, and recor
 Either way, the row set is derived from the profile; a fixed ceiling in the widget pool is an
 implementation detail, not a cap on the profile.
 
-- [ ] **Step 5: Run focused and full suites**
+- [x] **Step 5: Run focused and full suites**
 
 Run:
 
@@ -1319,7 +1330,7 @@ python -m unittest discover -s tests -v
 
 Perform a Forge UI smoke check and report whether it was possible. The minimum evidence is: tab loads, changing Model A updates rows, traditional SDXL hides rows, and a missing required slot prevents merge.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add component_ui.py scripts/merge_studio_ui.py tests/test_component_ui.py
