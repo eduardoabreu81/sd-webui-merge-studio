@@ -20,6 +20,7 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 
 - [Why Merge Studio?](#-why-merge-studio)
 - [Features](#-features)
+- [AIO Checkpoints](#-aio-checkpoints)
 - [Installation](#-installation)
 - [Quick Start](#-quick-start)
 - [Compatibility](#-compatibility)
@@ -48,6 +49,7 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 - Transfer a model difference with **Add Difference**.
 - Use **No Interpolation** to convert, re-quantize, or process a single model.
 - Choose precision separately for the diffusion model, text encoder, and VAE.
+- Build a self-contained **AIO** checkpoint by choosing its text encoder and VAE explicitly.
 - Merge compatible Anima generations with automatic block mapping.
 - See the detected architecture and embedded components before processing.
 
@@ -58,11 +60,91 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 - Keep the original VAE, remove it, or bake a custom VAE.
 - Preserve available LoRA trigger declarations in the saved model recipe.
 
+### 🧱 AIO Checkpoints
+
+Modern models keep their text encoder and VAE in separate files. An **AIO** is a
+checkpoint that carries its own, so it loads without anything configured in
+Forge's Additional Modules.
+
+Pick a model, choose **AIO** as the save mode, and a row appears for each
+component that model needs:
+
+```text
+Text Encoder   ( ) Keep what is in the file
+               (•) [ qwen_3_06b_base.safetensors  ▾ ]
+VAE            (•) [ qwen_image_vae.safetensors   ▾ ]
+```
+
+- **How many rows** comes from the model. Anima needs one encoder and a VAE;
+  Flux 1 needs two encoders and a VAE; SDXL needs only a VAE, because its
+  encoders are always inside the checkpoint.
+- **Keep what is in the file** appears only when the checkpoint already carries
+  that component *and* Forge can actually read it.
+- **Nothing is filled in for you.** The Additional Modules configured in Forge
+  are never used here — what goes into the file is what you picked.
+- **Every row has to be filled.** Leave one empty and the merge is blocked with
+  a message naming it. If you did not want a self-contained file, use **UNet
+  Only**.
+
+Component files are read from `models/text_encoder/` and `models/VAE/`, the same
+places Forge loads them from.
+
+#### What each architecture needs
+
+The rule is **one text encoder and one VAE**. Flux 1 is the only exception.
+
+| Architecture | Text encoder(s) | VAE |
+| :--- | :--- | :--- |
+| **Flux 1** (Dev / Schnell / Kontext) | **2** — CLIP-L + T5XXL | ae |
+| SDXL / Pony / Illustrious / NoobAI | built in, not selectable | sdxl-vae |
+| SD 1.5 | built in, not selectable | vae-ft-mse |
+| Anima (all generations) | Qwen3 0.6B | Qwen-Image VAE |
+| Krea2 | Qwen3-VL 4B | Qwen-Image VAE |
+| Qwen-Image / Edit | Qwen2.5-VL 7B | Qwen-Image VAE |
+| Z-Image / Turbo | Qwen3 4B | ae |
+| Flux.2-Klein 4B | Qwen3 4B | flux2-vae |
+| Flux.2-Klein 9B | Qwen3 8B | flux2-vae |
+| Wan 2.x | UMT5XXL | wan vae |
+| Lumina Image 2 | Gemma2 2B | ae |
+| Chroma | T5XXL | ae |
+| Ernie-Image | Ministral3 3B | flux2-vae |
+
+Despite the shared name, **Flux 2 Klein takes one encoder, not two.**
+
+Only `.safetensors` components can be embedded. Encoders distributed as
+`fp8_scaled` or `fp8mixed` are fine and are copied exactly as they are — they
+cannot be converted to another precision, because that would mean unpacking the
+quantization. GGUF, Nunchaku/SVDQ and NF4 cannot go into a checkpoint at all.
+
+**Same as component source** reads the precision from the component file you
+picked, not from the model you are merging.
+
+#### Verified, or clearly not
+
+After saving, Merge Studio reopens the file **with no external modules at all**.
+Only then is it reported as an AIO.
+
+This matters more than it sounds. A checkpoint can contain a perfectly good
+encoder stored under a namespace its own architecture never reads — Forge
+ignores it and quietly falls back to whatever is configured, so the file looks
+self-contained and is not. Reopening is the only way to tell the two apart.
+
+If the file does not reopen on its own it is **kept**, marked **Not validated**,
+and the reasons are listed. It is still a usable checkpoint; it just needs its
+external modules, like before.
+
+The Model Recipe & Inspector reports the same thing for any checkpoint: which
+components are inside, which namespace they use, and whether this architecture
+will read them.
+
 ### 💾 Save & Load Recipes
 
 - Save the complete merge setup as a JSON recipe.
 - Restore models, merge settings, precision choices, VAE options, and LoRA selections.
 - Keep recipes inside the extension, in its own `recipes/` folder.
+- Record the components of an AIO, so the same composition can be rebuilt. A
+  component that is not installed on the machine loading the recipe is
+  reported and left empty, never swapped for something similar.
 - Load portable recipes even when some referenced files are not installed locally.
 
 ### 🔎 Model Recipe & Inspector
@@ -110,6 +192,16 @@ https://github.com/eduardoabreu81/sd-webui-merge-studio
 4. Set the output name, multiplier, precision, and save mode.
 5. Click **Merge / Process**.
 
+### Build an AIO (self-contained) Checkpoint
+
+1. Select the model in **Model A**.
+2. Set **Save Mode** to **AIO**.
+3. Fill every component row that appears — pick a file, or keep what the
+   checkpoint already has.
+4. Click **Merge / Process**.
+
+The result is reported as an AIO only after it reopens with no external modules.
+
 ### Convert or Quantize a Model
 
 1. Select the source checkpoint in **Model A**.
@@ -150,6 +242,7 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 | Merge checkpoints | Models with compatible architectures and tensor shapes |
 | Cross-generation Anima merge | Supported when the newer/larger model is Model A |
 | Inspect safetensors metadata | Checkpoints, LoRAs, text encoders, and VAEs |
+| Build an AIO checkpoint | Any architecture Forge Neo declares components for; verified by reopening |
 
 ### Output Formats
 
@@ -175,6 +268,7 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 - Models used in the same merge must be compatible. Merge Studio blocks known mismatches, but it cannot safely guess every new or uncommon architecture.
 - For cross-generation Anima merges, place the newer model with more blocks in **Model A**.
 - Some models store the text encoder and VAE separately. Make sure the required files are selected under Forge Neo's **Additional Modules**, even when saving only the diffusion model.
+- A checkpoint that appears to contain a text encoder or VAE does not always load with it: if the components sit under a namespace the architecture does not read, Forge ignores them. The inspector says when that is the case.
 - If Forge reports a LoRA mismatch in the console, the checkpoint can still be saved, but that LoRA may have been skipped.
 - Quantizing a VAE can affect image quality more noticeably than quantizing the diffusion model. FP16 or BF16 is the safest choice for the VAE.
 - Always keep the original models until you have tested the generated checkpoint.
