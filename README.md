@@ -281,6 +281,10 @@ The README is intentionally focused on installation and everyday use. Architectu
 
 The validation and research material already available in the repository can be found in **[Research Notes](docs/RESEARCH.md)**.
 
+The AIO component work was built and tested without a running Forge. What that leaves
+unproven, and how to prove it, is written down in
+**[Runtime Verification](docs/RUNTIME-VERIFICATION.md)**.
+
 ---
 
 ## 🙏 Credits
