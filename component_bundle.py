@@ -294,6 +294,121 @@ def build_component_plan(
     )
 
 
+@dataclass(frozen=True)
+class MergeComposition:
+    """How a merge loads and combines, decided before a single tensor moves.
+
+    Extracted so it can be tested. `checkpoint_merge` imports torch, Forge's
+    backend and the WebUI's `modules` at module scope, none of which exist in
+    the unit environment, so the orchestration decisions live here and the
+    tensor work stays there.
+    """
+
+    modular: bool
+    #: What engine A loads with. Empty on the traditional path, where the
+    #: global module list is still consulted.
+    primary_files: tuple[str, ...] = ()
+    use_global_modules: bool = True
+    #: B and C only ever contribute their diffusion model, so on the modular
+    #: path they load bare -- inheriting globals there would pull components
+    #: into memory that nothing reads.
+    secondary_uses_global_modules: bool = True
+    merge_text_encoder: bool = False
+    merge_vae: bool = False
+    allow_bake_vae: bool = True
+    plan: ComponentPlan | None = None
+
+
+def plan_merge_composition(
+    save_mode: str, component_selections=None, plan: ComponentPlan | None = None
+) -> MergeComposition:
+    """Decide how this merge composes, from the save mode and the selections.
+
+    The modular path takes over only when components were actually chosen for
+    a full save. Everything else keeps the traditional behaviour untouched,
+    including its use of the global module list -- changing that quietly would
+    alter outputs nobody asked to change.
+    """
+    selections = tuple(component_selections or ())
+
+    if selections and save_mode != "full":
+        raise ComponentValidationError(
+            "Component selections only apply when saving a full AIO checkpoint. "
+            f"This merge is set to {save_mode!r}, which writes the diffusion "
+            "model alone -- the selected components would be silently discarded."
+        )
+
+    if not selections:
+        return MergeComposition(
+            modular=False,
+            merge_text_encoder=save_mode == "full",
+            merge_vae=save_mode == "full",
+            allow_bake_vae=True,
+        )
+
+    if plan is None:
+        raise ComponentValidationError(
+            "Components were selected but no component plan was built for them."
+        )
+    if not plan.is_complete:
+        raise ComponentValidationError(
+            _incomplete_plan_message(plan)
+        )
+
+    return MergeComposition(
+        modular=True,
+        primary_files=plan.additional_state_dicts,
+        use_global_modules=False,
+        secondary_uses_global_modules=False,
+        # External components are attached whole, after the diffusion merge.
+        # Interpolating them across A/B/C is what this path exists to avoid.
+        merge_text_encoder=False,
+        merge_vae=False,
+        # The VAE slot replaces Bake VAE here; having both would be two ways to
+        # set the same thing.
+        allow_bake_vae=False,
+        plan=plan,
+    )
+
+
+def component_provenance(plan: ComponentPlan | None) -> list[dict]:
+    """What actually went into the output, for the recipe and the result line.
+
+    Records the slot, the file it came from and the precision that file
+    carried, so a saved AIO can be traced back to its inputs without guessing.
+    """
+    if plan is None:
+        return []
+    return [
+        {
+            "slot": component.slot_id,
+            "label": _label(component.slot_id),
+            "name": os.path.basename(component.path) if component.path else "",
+            "source": component.source,
+            "signature": component.signature_id,
+            "source_precision": component.source_precision,
+            "output_precision": component.output_format,
+            "support": str(plan.support),
+        }
+        for component in plan.components
+    ]
+
+
+def _incomplete_plan_message(plan: ComponentPlan) -> str:
+    parts = []
+    if plan.missing_slots:
+        names = ", ".join(_label(s) for s in plan.missing_slots)
+        parts.append(f"nothing was selected for {names}")
+    if plan.dropped_slots:
+        names = ", ".join(_label(s) for s in plan.dropped_slots)
+        parts.append(f"Forge did not accept the file chosen for {names}")
+    return (
+        "This checkpoint cannot be saved as an AIO: "
+        + "; and ".join(parts)
+        + ". Fill every component, or switch to UNet only."
+    )
+
+
 def preflight_component_plan(primary_path: str, plan: ComponentPlan, loader=None):
     """Load the checkpoint with exactly the plan's component files.
 

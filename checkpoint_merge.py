@@ -33,6 +33,15 @@ from lora_bake import (
     _pick_device,
 )
 from checkpoint_inspector import load_custom_vae_state_dict
+from component_bundle import (
+    ComponentSelection,
+    ComponentValidationError,
+    build_component_plan,
+    component_provenance,
+    plan_merge_composition,
+    preflight_component_plan,
+    validate_loaded_components,
+)
 from forge_capabilities import vae_key_prefix_for_saving
 import anima_remap
 from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
@@ -64,8 +73,24 @@ def _checkpoint_info(name: str) -> "sd_models.CheckpointInfo":
     return info
 
 
-def _load_engine(checkpoint_path: str):
-    return forge_loader(checkpoint_path, additional_state_dicts=shared.opts.forge_additional_modules)
+def _load_engine(
+    checkpoint_path: str,
+    additional_state_dicts=None,
+    *,
+    use_global_modules: bool = True,
+):
+    """Load a checkpoint, with either an explicit component list or Forge's.
+
+    The traditional path keeps consulting `shared.opts.forge_additional_modules`
+    so its outputs do not change. The AIO path always passes its own list and
+    sets `use_global_modules=False`: what goes into the file has to be what was
+    chosen, not whatever happened to be configured at the time.
+    """
+    if additional_state_dicts is None:
+        additional_state_dicts = (
+            shared.opts.forge_additional_modules if use_global_modules else []
+        )
+    return forge_loader(checkpoint_path, additional_state_dicts=list(additional_state_dicts))
 
 
 def _build_metadata(
@@ -160,6 +185,69 @@ def _build_metadata(
         metadata["sd_merge_models"] = json.dumps(sd_merge_models)
 
     return metadata
+
+
+def _parse_component_selections(raw) -> list[ComponentSelection]:
+    """Accept the interface's plain dicts, or already-built selections."""
+    out: list[ComponentSelection] = []
+    for entry in raw or ():
+        if isinstance(entry, ComponentSelection):
+            out.append(entry)
+            continue
+        try:
+            out.append(
+                ComponentSelection(
+                    slot_id=entry["slot_id"],
+                    source=entry.get("source", "file"),
+                    path=entry.get("path"),
+                    output_format=entry.get("output_format", "same"),
+                )
+            )
+        except (KeyError, TypeError) as e:
+            raise MergeError(f"Malformed component selection: {entry!r} ({e}).") from e
+    return out
+
+
+def _compose_modular_primary(primary_info, selections, save_mode, progress_cb):
+    """Resolve, preflight and reconcile the AIO composition for Model A.
+
+    Returns the final composition and the loaded engine. Everything that can
+    fail here fails before the merge starts, because a component problem found
+    after the tensors have been blended costs the whole run.
+    """
+    from checkpoint_inspector import infer_architecture_id, inspect_checkpoint
+
+    info = inspect_checkpoint(primary_info.filename)
+    if "error" in info:
+        raise MergeError(f"Could not inspect Primary Model (A): {info['error']}")
+
+    provisional = build_component_plan(
+        info.get("architecture_id") or "unknown",
+        primary_info.filename,
+        info,
+        selections,
+    )
+
+    if progress_cb:
+        progress_cb("Loading Primary Model (A) with selected components...")
+    try:
+        engine_a = preflight_component_plan(primary_info.filename, provisional)
+    except ComponentValidationError as e:
+        raise MergeError(str(e)) from e
+
+    try:
+        plan = validate_loaded_components(engine_a, provisional)
+        composition = plan_merge_composition(save_mode, selections, plan)
+    except ComponentValidationError as e:
+        # The engine is already resident at this point -- several GB of it.
+        # Dropping it before raising keeps a rejected composition from holding
+        # onto memory the next attempt is about to need.
+        del engine_a
+        memory_management.soft_empty_cache()
+        gc.collect()
+        raise MergeError(str(e)) from e
+
+    return composition, engine_a
 
 
 def _guard_anima_block_order(primary_insp, other_insp, fam_primary, fam_other, label):
@@ -380,12 +468,21 @@ def merge_checkpoints(
     device_choice: str = "auto",
     bake_vae: str | None = "original",
     anima_extend_ratio: float = 0.0,
+    component_selections: list[dict] | None = None,
     progress_cb=None,
 ) -> dict:
     if interp_method != INTERP_NO_INTERPOLATION and not secondary_name:
         raise MergeError("This interpolation method requires a Secondary Model (B).")
     if interp_method == INTERP_ADD_DIFFERENCE and not tertiary_name:
         raise MergeError("Add Difference requires a Tertiary Model (C).")
+
+    # Decided before anything expensive happens. With no selections this is the
+    # traditional path, unchanged down to the global module list it reads.
+    selections = _parse_component_selections(component_selections)
+    try:
+        composition = plan_merge_composition(save_mode, selections)
+    except ComponentValidationError as e:
+        raise MergeError(str(e)) from e
 
     primary_info = _checkpoint_info(primary_name)
     secondary_info = _checkpoint_info(secondary_name) if secondary_name else None
@@ -419,9 +516,20 @@ def merge_checkpoints(
     except Exception:
         pass
 
-    if progress_cb:
-        progress_cb("Loading Primary Model (A)...")
-    engine_a = _load_engine(primary_info.filename)
+    # An AIO composition is resolved and preflighted before any merge work, so
+    # a missing component costs a load rather than a whole merge. The engine it
+    # loads is the one the merge then uses -- loading A twice would double the
+    # most expensive step for nothing.
+    if composition.modular:
+        if progress_cb:
+            progress_cb("Resolving components...")
+        composition, engine_a = _compose_modular_primary(
+            primary_info, selections, save_mode, progress_cb
+        )
+    else:
+        if progress_cb:
+            progress_cb("Loading Primary Model (A)...")
+        engine_a = _load_engine(primary_info.filename)
     engine_b = None
     engine_c = None
 
@@ -433,14 +541,20 @@ def merge_checkpoints(
         if secondary_info:
             if progress_cb:
                 progress_cb("Loading Secondary Model (B)...")
-            engine_b = _load_engine(secondary_info.filename)
+            engine_b = _load_engine(
+                secondary_info.filename,
+                use_global_modules=composition.secondary_uses_global_modules,
+            )
             incompat = detect_incompatible_engine(engine_b)
             if incompat:
                 raise MergeError(f"Secondary Model (B) is incompatible with this merge: {incompat}.")
         if tertiary_info:
             if progress_cb:
                 progress_cb("Loading Tertiary Model (C)...")
-            engine_c = _load_engine(tertiary_info.filename)
+            engine_c = _load_engine(
+                tertiary_info.filename,
+                use_global_modules=composition.secondary_uses_global_modules,
+            )
             incompat = detect_incompatible_engine(engine_c)
             if incompat:
                 raise MergeError(f"Tertiary Model (C) is incompatible with this merge: {incompat}.")
@@ -494,7 +608,7 @@ def merge_checkpoints(
             extend_ratio=anima_extend_ratio,
         )
 
-        if clip_a is not None:
+        if clip_a is not None and composition.merge_text_encoder:
             if progress_cb:
                 progress_cb("Merging text encoder...")
             merged_clip, skipped_clip = _merge_module_tree(
@@ -505,10 +619,14 @@ def merge_checkpoints(
         else:
             merged_clip, skipped_clip = 0, []
 
-        is_custom_vae = bool(bake_vae and bake_vae not in ("original", "none", ""))
-        strip_vae = bake_vae == "none"
+        # On the AIO path the VAE slot replaces Bake VAE; keeping both would
+        # be two controls setting the same thing.
+        is_custom_vae = composition.allow_bake_vae and bool(
+            bake_vae and bake_vae not in ("original", "none", "")
+        )
+        strip_vae = composition.allow_bake_vae and bake_vae == "none"
 
-        if save_mode == "full" and not is_custom_vae and not strip_vae and vae_a is not None:
+        if composition.merge_vae and not is_custom_vae and not strip_vae and vae_a is not None:
             if progress_cb:
                 progress_cb("Merging VAE...")
             merged_vae, skipped_vae = _merge_module_tree(
@@ -732,6 +850,9 @@ def merge_checkpoints(
             "save_mode": save_mode,
             "loras": applied_loras,
             "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),
+            "modular_full": composition.modular,
+            "component_plan": composition.plan,
+            "components_attached": component_provenance(composition.plan),
         }
     finally:
         del engine_a, engine_b, engine_c
