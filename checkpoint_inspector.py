@@ -891,9 +891,110 @@ def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, 
         )
 
     try:
-        m = float(recipe.get("multiplier"))
+        # `multiplier` is the WebUI field; tools with a beta call the first
+        # ratio `alpha`. With per-block weights this is only the base value --
+        # the rules that override it are drawn separately.
+        raw_m = recipe.get("multiplier")
+        m = float(raw_m if raw_m is not None else recipe.get("alpha"))
     except (TypeError, ValueError):
         m = None
+
+    try:
+        b = float(recipe.get("beta"))
+    except (TypeError, ValueError):
+        b = None
+
+    def _ratios(*names) -> str:
+        """The base values, flagged when rules will override them."""
+        values = {"α": m, "β": b}
+        parts = [
+            f"<code style='color:#f97316;'>{n} = {values[n]:g}</code>"
+            for n in names
+            if values.get(n) is not None
+        ]
+        if not parts:
+            return ""
+        note = ""
+        if recipe.get("block_weights") or recipe.get("alpha_raw") or recipe.get("beta_raw"):
+            note = (
+                " <span style='color:#9ca3af;'>&mdash; base values; per-block "
+                "rules below override them</span>"
+            )
+        return _line("<b>Ratios:</b> " + " &nbsp; ".join(parts) + note)
+
+    # Checked before Add Difference: "similarity add difference" contains
+    # "add_difference", so the substring test below would claim it first.
+    if "similarity_add_difference" in key:
+        return "Similarity Add Difference", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A + &alpha; &times; (B &minus; C), "
+            "weighted per tensor by how alike A and B already are</code> "
+            "<span style='color:#9ca3af;'>&mdash; Add Difference that holds back where the "
+            "two models already agree.</span>"
+        ) + _ratios("α", "β")
+
+    if "smooth_add_difference" in key:
+        return "Smooth Add Difference", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A + &alpha; &times; filtered(B &minus; C)</code> "
+            "<span style='color:#9ca3af;'>&mdash; the difference is median- and gaussian-filtered "
+            "before it is added.</span>"
+        ) + _ratios("α")
+
+    if "train_difference" in key:
+        return "Train Difference", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A + scaled(B &minus; C)</code> "
+            "<span style='color:#9ca3af;'>&mdash; each tensor is scaled by how far B actually "
+            "moved from C, rather than by a fixed ratio.</span>"
+        ) + _ratios("α")
+
+    if "sum_twice" in key:
+        return "Sum Twice", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>(1 &minus; &beta;) &times; "
+            "((1 &minus; &alpha;)A + &alpha;B) + &beta; &times; C</code> "
+            "<span style='color:#9ca3af;'>&mdash; A is blended with B, and that result is then "
+            "blended with C. Two ratios, applied in sequence.</span>"
+        ) + _ratios("α", "β")
+
+    if "triple_sum" in key:
+        return "Triple Sum", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>(1 &minus; &alpha; &minus; &beta;)A "
+            "+ &alpha;B + &beta;C</code> "
+            "<span style='color:#9ca3af;'>&mdash; all three at once, in one weighted average.</span>"
+        ) + _ratios("α", "β")
+
+    if key.startswith("dare"):
+        return "DARE", _line(
+            "<b>Formula:</b> <code style='color: #f97316;'>A + rescaled random subset of "
+            "(B &minus; A)</code> "
+            "<span style='color:#9ca3af;'>&mdash; drops a share of the difference at random and "
+            "rescales what is left, so the result keeps the magnitude with fewer of the "
+            "changes.</span>"
+        ) + _ratios("α", "β")
+
+    if "save_components" in key:
+        # Which components, from the field the ratio would otherwise occupy.
+        # Every one of the thirteen of these in the reference library saved
+        # `unet` and nothing else -- which is what "No Interpolation" with the
+        # save mode on "UNet Only" produces here, so the note says so rather
+        # than leaving someone hunting for a mode that has another name.
+        saved = recipe.get("alpha") or recipe.get("alpha_raw")
+        if isinstance(saved, (list, tuple)):
+            saved = ", ".join(str(x) for x in saved)
+        named = (
+            f"<b>Components saved:</b> <code style='color:#f97316;'>{_esc(saved)}</code> "
+            if saved
+            else ""
+        )
+        equivalent = ""
+        if saved and str(saved).strip().lower() in ("unet", "['unet']"):
+            equivalent = (
+                "<span style='color:#9ca3af;'>&mdash; the same output this "
+                "extension produces with <b>No Interpolation</b> and the save "
+                "mode on <b>UNet Only</b>.</span>"
+            )
+        return "Save Components", _line(
+            "<b>No merging.</b> <span style='color:#9ca3af;'>Selected components of the first "
+            "model were written out on their own.</span>"
+        ) + (_line(named + equivalent) if named else "")
 
     if "no_interpolation" in key:
         # Format/precision conversion or a LoRA bake: one model in, one out.
@@ -947,6 +1048,71 @@ def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, 
         f"is shown rather than guessed. Check <b>Raw Metadata</b> for the tool's own "
         f"fields.</span>"
     )
+
+
+#: Where each writer keeps its ratio, and what to call it on screen.
+#
+# `alpha_raw` / `beta_raw` are the external merger's field names. `block_weights`
+# is ours -- a merge this app writes with per-block rules has to be legible to
+# this app's own reader, which is exactly what was not true of the external
+# fields before they were added here.
+_RATIO_FIELDS = (
+    ("alpha_raw", "Alpha"),
+    ("beta_raw", "Beta"),
+    ("block_weights", "Multiplier"),
+)
+
+
+def _format_recipe_ratios(recipe: dict[str, Any], block_count: Any) -> str:
+    """The ratio of a block-weighted merge, drawn rather than omitted.
+
+    A recipe written by a tool with per-block weights has no scalar multiplier
+    for `_describe_merge_math` to find, so the dashboard rendered its ratio as
+    nothing at all -- which reads as "this merge had no proportions" when in
+    fact it had ten rules. Delegates the reading to `elemental_weights`, the
+    parser that also has to exist for the merge side.
+    """
+    from elemental_weights import (
+        format_block_array_html,
+        format_weight_profile_html,
+        parse_weight_spec,
+    )
+
+    blocks = block_count if isinstance(block_count, int) and block_count > 0 else 28
+
+    sections = []
+    for field, label in _RATIO_FIELDS:
+        raw = recipe.get(field)
+        if raw in (None, ""):
+            continue
+        spec = parse_weight_spec(str(raw))
+        if spec.is_uniform and not spec.errors:
+            # A plain number is already covered by the formula line above, and
+            # so is a component list -- "Save Components" writes one where the
+            # ratio goes, and heading it "per-block weights" says the opposite
+            # of what it is.
+            continue
+        sections.append(
+            "<div style='margin-top:12px;'>"
+            f"<div style='font-size:11px;text-transform:uppercase;color:#f97316;"
+            f"font-weight:700;margin-bottom:6px;'>{label} &mdash; per-block weights</div>"
+            + format_weight_profile_html(spec, blocks)
+            + "</div>"
+        )
+
+    # The numeric arrays, when they say anything. Measured across 139 recipes
+    # in the reference library, every one is constant -- the tool writes the
+    # base into all 34 slots and puts the real variation in the elemental
+    # rules above. `format_block_array_html` returns nothing for those, so
+    # this adds a section only for an array that is genuinely per-block.
+    for field, label in (("alpha_weights", "Alpha"), ("beta_weights", "Beta")):
+        drawn = format_block_array_html(recipe.get(field), blocks, label)
+        if drawn:
+            sections.append(f"<div style='margin-top:12px;'>{drawn}</div>")
+
+    if not sections:
+        return ""
+    return "".join(sections)
 
 
 def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
@@ -1103,8 +1269,27 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     # Recipe section HTML
     recipe_html = ""
     if recipe:
-        raw_method = str(recipe.get("interp_method", recipe.get("type", "Custom Merge")))
+        # `type` names the *tool*, not the method. Reading it as the method is
+        # how a Sum Twice merge came to be labelled "merge-models-chattiori".
+        # Each writer uses its own field for the method, so try them in order
+        # of specificity and keep `type` as the last resort it always was.
+        raw_method = str(
+            recipe.get("merge_method")
+            or recipe.get("interp_method")
+            or recipe.get("type")
+            or "Custom Merge"
+        )
         method, math_html = _describe_merge_math(raw_method, recipe)
+
+        tool = str(recipe.get("type") or "")
+        tool_html = ""
+        if tool and tool.strip().lower() != raw_method.strip().lower():
+            tool_html = (
+                "<div style='font-size:11.5px;color:#6b7280;margin:-6px 0 12px 0;'>"
+                f"Recorded by <code>{_esc(tool)}</code></div>"
+            )
+
+        math_html += tool_html + _format_recipe_ratios(recipe, info.get("block_count"))
 
         # Lookup model names from models dict
         p_hash = recipe.get("primary_model_hash", "")
@@ -1333,6 +1518,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"<div style='display: flex; gap: 8px; flex-wrap: wrap;'>"
         f"<span style='background: #1e3a8a; color: #93c5fd; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(_architecture_label(info))}</span>"
         f"<span style='background: #312e81; color: #c7d2fe; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;'>{_esc(prec)}</span>"
+        f"{_prediction_badges_html(info)}"
         f"</div>"
         f"</div>"
         # Component Grid
