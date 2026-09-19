@@ -835,11 +835,28 @@ def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, 
             "<span style='color:#9ca3af;'>&mdash; per-LoRA strengths are listed below.</span>"
         )
 
-    # Unknown method: show the multiplier if there is one, but don't claim to
-    # know what it means.
+    # An unknown method is a merge made by another tool, which wrote its own
+    # vocabulary into the header. Show the multiplier if one is there, but do
+    # not claim to know what it means in that tool's formula.
     if m is not None:
-        return raw_method, _line(f"<b>Multiplier:</b> <code style='color: #f97316;'>{m:.2f}</code>")
-    return raw_method, ""
+        return raw_method, _line(
+            f"<b>Multiplier:</b> <code style='color: #f97316;'>{m:.2f}</code> "
+            f"<span style='color:#9ca3af;'>&mdash; recorded by an external tool "
+            f"(<code>{_esc(raw_method)}</code>); how it combines the models is that "
+            f"tool's own formula.</span>"
+        )
+
+    # Showing the models and no number at all reads as "this merge had no
+    # proportions". It had some; they are just not in a field this reads.
+    # Which of the two it is -- absent from the file, or present under a name
+    # only that tool uses -- is not knowable from here, so neither is claimed.
+    return raw_method, _line(
+        f"<span style='color:#9ca3af;'>Merged by an external tool "
+        f"(<code>{_esc(raw_method)}</code>). Its source models are recorded below, "
+        f"but no blend proportion appears in any field this inspector reads, so none "
+        f"is shown rather than guessed. Check <b>Raw Metadata</b> for the tool's own "
+        f"fields.</span>"
+    )
 
 
 def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
@@ -863,12 +880,30 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     raw_meta = info.get("raw_metadata") or {}
 
     # Component status pills (only present components are rendered)
-    def _comp_pill(name: str, note: str = ""):
-        desc = f" ({note})" if note else ""
+    def _comp_pill(name: str, note: str = "", *, usable: bool = True):
+        """One component card: what it is, whether it will be used, and why.
+
+        Stacked rather than split left-to-right. The grid gives each card about
+        220px, and a flex row sharing that between a label and a sentence left
+        roughly 110px per side, which wrapped one line of prose into four
+        ragged ones.
+
+        `usable` is the difference between "Present" and "Present, but unused".
+        Reporting a component this architecture cannot read in the same green
+        as one it loads is true and misleading at the same time.
+        """
+        colour = "#10b981" if usable else "#fbbf24"
+        status = "Present" if usable else "Present, but not used"
+        desc = (
+            f"<div style='color: #9ca3af; font-size: 11.5px; margin-top: 3px; line-height: 1.45;'>{note}</div>"
+            if note
+            else ""
+        )
         return (
-            f"<div style='display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);'>"
-            f"<span style='font-weight: 500;'>{name}</span>"
-            f"<span style='color: #10b981; font-weight: bold;'>Present{desc}</span>"
+            f"<div style='padding: 10px 12px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07);'>"
+            f"<div style='font-weight: 500;'>{name}</div>"
+            f"<div style='color: {colour}; font-weight: bold; margin-top: 3px;'>{status}</div>"
+            f"{desc}"
             f"</div>"
         )
 
@@ -893,44 +928,68 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
     embedded = info.get("embedded_components") or ()
     unreadable = {c["kind"]: c for c in embedded if c.get("readable") is False}
 
-    def _component_note(kind: str, default: str) -> str:
+    def _component_note(kind: str, default: str) -> tuple[str, bool]:
+        """The card's description, and whether the component is usable here.
+
+        A namespace ends in a dot, so it is wrapped in <code> rather than run
+        into the prose: "reads vae." next to a full stop reads as a typo.
+        """
         stray = unreadable.get(kind)
         if stray is None:
-            return default
-        return f"in {stray['namespace']} — not read by this architecture"
+            return default, True
+        return (
+            f"Stored under <code>{_esc(stray['namespace'])}</code>, a namespace "
+            f"this architecture never reads.",
+            False,
+        )
 
     comp_pills = []
     if comps.get("unet"):
         comp_pills.append(_comp_pill(model_name, unet_note))
     if comps.get("clip"):
-        comp_pills.append(
-            _comp_pill(te_pill_label, _component_note("text_encoder", clip_note))
-        )
+        note, usable = _component_note("text_encoder", clip_note)
+        comp_pills.append(_comp_pill(te_pill_label, note, usable=usable))
     if comps.get("vae"):
-        comp_pills.append(
-            _comp_pill("VAE (Autoencoder)", _component_note("vae", vae_note))
-        )
+        note, usable = _component_note("vae", vae_note)
+        comp_pills.append(_comp_pill("VAE (Autoencoder)", note, usable=usable))
     if comps.get("llm_adapter"):
         comp_pills.append(_comp_pill("Anima LLM Adapter", "Embedded DiT alignment weights"))
 
     if not comp_pills:
         comp_pills.append("<div style='padding: 8px 12px; border-radius: 6px; background: rgba(239, 68, 68, 0.1); color: #ef4444;'>No standard neural components detected in file header.</div>")
 
+    # Rendered after the grid, not inside it. A `grid-column: 1 / -1` item
+    # spans every track, which means auto-fit finds no empty track to collapse
+    # -- so a 1400px row keeps six 250px columns and squeezes three component
+    # cards into the leftmost ones. With two components and no warning the same
+    # grid stretched correctly, which is what made the bug look like a
+    # component-count problem rather than a spanning one.
+    namespace_note_html = ""
     if unreadable:
         expected = next(
             (c.get("expected_namespace") for c in unreadable.values() if c.get("expected_namespace")),
             None,
         )
         names = ", ".join(
-            _esc(c["namespace"]) for c in unreadable.values()
+            f"<code>{_esc(c['namespace'])}</code>" for c in unreadable.values()
         )
-        comp_pills.append(
-            "<div style='grid-column: 1 / -1; padding: 8px 12px; border-radius: 6px; "
-            "background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245,158,11,0.4); color: #fbbf24;'>"
-            f"<b>Heads up:</b> this file stores components under {names}, but "
-            f"{_esc(arch)} reads {_esc(expected or 'a different namespace')}. "
-            "Forge will ignore them and use whatever is set in Additional Modules. "
-            "The tensors are still in the file, so another runtime may read them."
+        labels = {"vae": "autoencoder (VAE)", "text_encoder": "text encoder"}
+        what = ", ".join(labels.get(kind, kind) for kind in unreadable)
+        plural = "they are" if len(unreadable) > 1 else "it is"
+        wanted = (
+            f"<code>{_esc(expected)}</code>" if expected else "a different namespace"
+        )
+        namespace_note_html = (
+            "<div style='margin-top: 8px; padding: 10px 12px; border-radius: 6px; "
+            "background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245,158,11,0.4); "
+            "color: #fbbf24; line-height: 1.55;'>"
+            "<b>This checkpoint is not self-contained.</b><br>"
+            f"Its {what} sits under {names}, but {_esc(arch)} only reads {wanted}, "
+            f"so Forge will not load {'them' if len(unreadable) > 1 else 'it'} — it "
+            "will use whatever you have selected under <b>Additional Modules</b> instead."
+            "<br>"
+            f"Nothing is broken and nothing is lost: the tensors are still in the file, and "
+            f"{plural} readable by any runtime that looks in that namespace."
             "</div>"
         )
 
@@ -1187,9 +1246,10 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         f"</div>"
         f"</div>"
         # Component Grid
-        f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-top: 14px;'>"
+        f"<div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 8px; margin-top: 14px;'>"
         f"{comp_grid_html}"
         f"</div>"
+        f"{namespace_note_html}"
         f"{turbo_html}"
         f"</div>"
         # Recipe Section
