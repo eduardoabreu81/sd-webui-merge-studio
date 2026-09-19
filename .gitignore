@@ -6,3 +6,8 @@ recipes/
 
 # Internal audit notes -- not user documentation
 docs/AIO-COMPONENTS-AUDIT.md
+
+# Planning notes: working documents, not documentation of the extension.
+# They record decisions and reasoning while a feature is being designed, which
+# is useful here and misleading to anyone reading the repository as a user.
+docs/superpowers/
