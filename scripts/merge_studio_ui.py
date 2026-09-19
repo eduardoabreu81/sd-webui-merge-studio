@@ -18,6 +18,8 @@ if _EXT_ROOT not in sys.path:
 
 import aux_inspector  # noqa: E402
 import checkpoint_merge  # noqa: E402
+import elemental_weights  # noqa: E402
+import merge_modes  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
 import lora_extract  # noqa: E402
@@ -28,6 +30,7 @@ from checkpoint_inspector import (
     available_vaes,
     format_badges_html,
     format_recipe_dashboard_html,
+    get_model_family,
     inspect_checkpoint,
 )
 from quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
@@ -172,12 +175,12 @@ COMPATIBLE_MODELS_NOTE = (
     "broken file."
 )
 
-INTERP_CHOICES = [
-    ("No Interpolation", checkpoint_merge.INTERP_NO_INTERPOLATION),
-    ("Weighted Sum", checkpoint_merge.INTERP_WEIGHTED_SUM),
-    ("Add Difference", checkpoint_merge.INTERP_ADD_DIFFERENCE),
-]
+# The modes, their labels and what each one needs are declared once, in
+# `merge_modes.MERGE_MODES`. The picker, the field visibility and the
+# recipe all read from there; none of them keeps its own list.
+INTERP_CHOICES = [(mode.label, mode.key) for mode in merge_modes.MERGE_MODES]
 INTERP_LABEL_TO_KEY = dict(INTERP_CHOICES)
+INTERP_KEY_TO_LABEL = {key: label for label, key in INTERP_CHOICES}
 
 
 def _checkpoint_path(name: str) -> str:
@@ -443,13 +446,6 @@ def preview_metadata_handler(primary_name: str, secondary_name: str, tertiary_na
     return gr.update(value=json.dumps(metadata, indent=4, ensure_ascii=False), visible=True)
 
 
-INTERP_DESCRIPTIONS = {
-    checkpoint_merge.INTERP_NO_INTERPOLATION: "Require 1 Model ; Mainly for format conversion",
-    checkpoint_merge.INTERP_WEIGHTED_SUM: "Require 2 Model ; Result is calculated as A * (1 - M) + B * M",
-    checkpoint_merge.INTERP_ADD_DIFFERENCE: "Require 3 Model ; Result is calculated as A + (B - C) * M",
-}
-
-
 # --- Merge recipes (save / load the whole tab as JSON) -------------------
 
 RECIPE_VERSION = component_recipes.RECIPE_VERSION
@@ -465,7 +461,7 @@ MAX_COMPONENT_ROWS = 3
 # value for anything a older recipe doesn't carry.
 RECIPE_FIELDS = (
     "primary", "secondary", "tertiary",
-    "interp", "multiplier", "anima_extend_ratio",
+    "interp", "multiplier", "beta", "seed", "block_weights", "anima_extend_ratio",
     "save_mode", "device", "output_name", "discard",
     "format", "clip_format", "vae_format",
     "save_metadata", "config_source", "add_merge_recipe", "bake_vae",
@@ -573,7 +569,10 @@ def load_recipe_handler(recipe_name: str):
         + [gr.update() for _ in range(2 * MAX_LORAS)]
         + [gr.update()]
         + [gr.update() for _ in range(MAX_LORAS)]
-        + [gr.update(), gr.update()]
+        # secondary_col, tertiary_col, merge_beta, merge_seed,
+        # merge_mode_html, block_weights_accordion, merge_block_profile. The
+        # status HTML is appended by the caller, so it is not counted here.
+        + [gr.update() for _ in range(7)]
     )
     try:
         with open(_recipe_path(recipe_name), "r", encoding="utf-8") as f:
@@ -618,8 +617,12 @@ def load_recipe_handler(recipe_name: str):
         row_updates = [gr.update(visible=(i < slots)) for i in range(MAX_LORAS)]
 
         method = INTERP_LABEL_TO_KEY.get(settings.get("interp"), settings.get("interp"))
-        has_b = method != checkpoint_merge.INTERP_NO_INTERPOLATION
-        has_c = method == checkpoint_merge.INTERP_ADD_DIFFERENCE
+        try:
+            mode = merge_modes.merge_mode(method)
+        except Exception:
+            # A recipe naming a mode this build does not have. The rest of it
+            # still loads; the picker keeps whatever is selected.
+            mode = merge_modes.MERGE_MODES_BY_KEY[merge_modes.INTERP_WEIGHTED_SUM]
 
         if missing:
             gr.Warning("Not found on this install, left unchanged: " + "; ".join(missing), duration=10)
@@ -633,30 +636,111 @@ def load_recipe_handler(recipe_name: str):
             saved_at = (recipe.get("_meta") or {}).get("saved_at", "")
             note = f"<div style='margin-top:6px;font-size:12px;color:#10b981;'>Loaded <code>{recipe_name}</code>{' &middot; saved ' + saved_at if saved_at else ''}</div>"
 
-        return scalar_updates + dd_updates + st_updates + [slots] + row_updates + [gr.update(visible=has_b), gr.update(visible=has_c)] + [note]
+        return (
+            scalar_updates + dd_updates + st_updates + [slots] + row_updates
+            + [
+                gr.update(visible=mode.needs_b),
+                gr.update(visible=mode.needs_c),
+                gr.update(visible=mode.needs_beta),
+                gr.update(visible=mode.needs_seed),
+                gr.update(value=merge_modes.merge_mode_panel(mode.key)),
+                block_weights_visibility(settings.get("primary", "")),
+                gr.update(
+                    value=block_weights_preview(
+                        settings.get("primary", ""),
+                        settings.get("block_weights", ""),
+                        settings.get("multiplier", 0.0),
+                    )
+                ),
+            ]
+            + [note]
+        )
     except Exception as e:
         gr.Warning(str(e), duration=8)
         return blank + [_err_html(e)]
 
 
 def merge_update_method(value: str):
+    """The form follows the mode. Every answer comes from MERGE_MODES."""
     method = INTERP_LABEL_TO_KEY.get(value, value)
-    has_b = method != checkpoint_merge.INTERP_NO_INTERPOLATION
-    has_c = method == checkpoint_merge.INTERP_ADD_DIFFERENCE
-    if has_c:
-        config_choices = ["A", "B", "C"]
-    elif has_b:
-        config_choices = ["A", "B"]
-    else:
-        config_choices = ["A"]
+    try:
+        mode = merge_modes.merge_mode(method)
+    except Exception:
+        mode = merge_modes.MERGE_MODES_BY_KEY[merge_modes.INTERP_WEIGHTED_SUM]
+
+    config_choices = ["A"] + (["B"] if mode.needs_b else []) + (["C"] if mode.needs_c else [])
 
     return [
-        gr.update(visible=has_b),
-        gr.update(visible=has_b),
-        gr.update(visible=has_c),
-        gr.update(info=INTERP_DESCRIPTIONS.get(method, "")),
+        gr.update(visible=mode.needs_b),                     # multiplier
+        gr.update(visible=mode.needs_b),                     # Model B column
+        gr.update(visible=mode.needs_c),                     # Model C column
+        gr.update(visible=mode.needs_beta,
+                  label=mode.beta_label or "Beta (β)"),      # beta
+        gr.update(visible=mode.needs_seed),                  # seed
+        gr.update(value=merge_modes.merge_mode_panel(method)),           # the panel
         gr.update(choices=config_choices, value=config_choices),
     ]
+
+
+def _anima_block_count(checkpoint_name: str) -> int | None:
+    """How many blocks Model A has, or None when it is not an Anima at all.
+
+    The number comes from the checkpoint and never from a control. Anima ships
+    as 28, 40 or 52; a free-running value would let someone write a rule for
+    layer 40 of a 28-block model and watch a profile that cannot happen.
+    """
+    info = _get_cached_checkpoint_info(checkpoint_name)
+    if not info or info.get("error"):
+        return None
+    if get_model_family(info.get("architecture", "")) != "anima":
+        return None
+    blocks = info.get("block_count")
+    return blocks if isinstance(blocks, int) and blocks > 0 else None
+
+
+def block_weights_visibility(primary_name: str):
+    """Per-block weights are shown for Anima and absent for everything else.
+
+    Not disabled with an explanation, not greyed out -- absent. `L00-L27`
+    assumes one numbered stack of blocks, which SDXL's three sections and
+    Flux's two parallel series are not, and offering a control that cannot
+    work is worse than not offering it.
+    """
+    return gr.update(visible=_anima_block_count(primary_name) is not None)
+
+
+def block_weights_preview(primary_name: str, text: str, multiplier: float):
+    """The per-layer strip under the editor, redrawn as the rules are typed.
+
+    Ten overlapping rules over a base of 0.0 is not something anyone can hold
+    in their head, and it is trivial to look at. Same drawing the Inspector
+    gives a finished merge, so what is on screen while typing is what the
+    resulting checkpoint will report.
+    """
+    blocks = _anima_block_count(primary_name)
+    spec = elemental_weights.spec_with_base(
+        elemental_weights.parse_weight_spec(text or ""), float(multiplier or 0.0)
+    )
+    problems = elemental_weights.validate_spec(spec, blocks)
+    return elemental_weights.format_weight_editor_html(spec, blocks, problems)
+
+
+def import_block_weights(checkpoint_name: str):
+    """Lift the per-block rules out of a checkpoint that already has them.
+
+    Nobody writes ten rules from scratch; they start from something that
+    worked. Reads the same fields the Inspector reads, so anything the
+    Inspector can draw is something this can import.
+    """
+    info = _get_cached_checkpoint_info(checkpoint_name)
+    recipe = (info or {}).get("recipe") or {}
+    for field in ("block_weights", "alpha_raw", "multiplier_raw"):
+        raw = recipe.get(field)
+        if raw and elemental_weights.parse_weight_spec(str(raw)).rules:
+            gr.Info(f"Imported per-block rules from {checkpoint_name}", duration=4)
+            return gr.update(value=str(raw).strip())
+    gr.Warning(f"{checkpoint_name or 'That checkpoint'} records no per-block rules.")
+    return gr.update()
 
 
 #: Shown in place of a filename when the checkpoint's own component is kept.
@@ -757,6 +841,9 @@ def merge_handler(
     tertiary_name: str,
     interp_label: str,
     multiplier: float,
+    beta: float = 0.0,
+    seed: int = 0,
+    block_weights: str = "",
     anima_extend_ratio: float = 0.0,
     save_mode_label: str = SAVE_MODE_CHOICES[0][0],
     device_label: str = DEVICE_CHOICES[0][0],
@@ -795,7 +882,7 @@ def merge_handler(
             gr.Warning(message)
             return gr.update(), f"<div>{message}</div>"
 
-        interp_method = INTERP_LABEL_TO_KEY.get(interp_label, checkpoint_merge.INTERP_NO_INTERPOLATION)
+        interp_method = INTERP_LABEL_TO_KEY.get(interp_label, merge_modes.INTERP_NO_INTERPOLATION)
         output_format = FORMAT_LABEL_TO_KEY.get(format_label, "same")
         clip_output_format = FORMAT_LABEL_TO_KEY.get(clip_format_label, "same")
         vae_output_format = FORMAT_LABEL_TO_KEY.get(vae_format_label, "same")
@@ -853,6 +940,9 @@ def merge_handler(
             anima_extend_ratio=float(anima_extend_ratio or 0.0),
             component_selections=component_selections,
             progress_cb=progress_cb,
+            beta=float(beta or 0.0),
+            block_weights=block_weights or "",
+            seed=int(seed or 0),
         )
 
         sd_models.list_models()
@@ -1202,14 +1292,44 @@ def create_merge_studio_tab():
                     queue=False,
                 )
 
+                # A Dropdown rather than a Radio: the mode list grows, and
+                # Gradio filters a dropdown as you type where a Radio renders
+                # as ragged rows of buttons. The panel below carries the
+                # formula, which `info=` cannot format.
                 with gr.Row():
-                    merge_interp = gr.Radio(
+                    merge_interp = gr.Dropdown(
                         choices=[label for label, _ in INTERP_CHOICES],
-                        value=INTERP_CHOICES[1][0],
+                        value=INTERP_KEY_TO_LABEL[merge_modes.INTERP_WEIGHTED_SUM],
                         label="Interpolation Method",
-                        info=INTERP_DESCRIPTIONS[checkpoint_merge.INTERP_WEIGHTED_SUM],
+                        filterable=True,
                     )
-                    merge_multiplier = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.05, label="Multiplier (M)")
+                    merge_multiplier = gr.Slider(minimum=0.0, maximum=1.0, value=0.5, step=0.05, label="Multiplier (M) — α")
+                    # The mode decides whether this exists at all. Sum Twice
+                    # has a beta because of what Sum Twice is, not because the
+                    # user asked for an advanced view.
+                    merge_beta = gr.Slider(
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.5,
+                        step=0.05,
+                        label=merge_modes.MERGE_MODES_BY_KEY[
+                            merge_modes.INTERP_SUM_TWICE
+                        ].beta_label,
+                        visible=False,
+                    )
+                    # Only the stochastic modes have one. Recorded in the
+                    # recipe, because a merge that cannot be repeated makes
+                    # its own recipe a lie.
+                    merge_seed = gr.Number(
+                        value=0,
+                        precision=0,
+                        label="Seed — change it to draw a different subset",
+                        visible=False,
+                    )
+
+                merge_mode_html = gr.HTML(
+                    merge_modes.merge_mode_panel(merge_modes.INTERP_WEIGHTED_SUM)
+                )
 
                 anima_extend_ratio = gr.Slider(
                     minimum=0.0,
@@ -1226,6 +1346,45 @@ def create_merge_studio_tab():
                         "LoRA trained against weights they don't have. Experimental — the inserted blocks diverged in training."
                     ),
                 )
+
+                # Anima only, and absent rather than disabled for everything
+                # else -- see `block_weights_visibility`. Collapsed, because
+                # the merge tab already has three accordions and a uniform
+                # merge is what almost every run wants.
+                with gr.Accordion(
+                    "Per-block weights (Anima)", open=False, visible=False
+                ) as block_weights_accordion:
+                    gr.Markdown(
+                        "Weight individual layers differently from the Multiplier. One rule per line, "
+                        "written the way the recipes already record them: "
+                        "`L05-L09:self_attn.q_proj self_attn.k_proj:0.08`  — a layer range, the module "
+                        "names it applies to, and the weight. Layers no rule names merge at the "
+                        "Multiplier. **Where two rules overlap, the later one wins.**"
+                    )
+                    merge_block_weights = gr.Textbox(
+                        label="Rules",
+                        lines=4,
+                        max_lines=12,
+                        placeholder="L05-L09:self_attn.q_proj self_attn.k_proj:0.08",
+                    )
+                    with gr.Row(equal_height=True):
+                        block_weights_source = gr.Dropdown(
+                            label="Start from a checkpoint that already has rules",
+                            choices=sorted(sd_models.checkpoint_tiles()),
+                            scale=4,
+                        )
+                        block_weights_import = gr.Button("Import rules", scale=1)
+                        create_refresh_button(
+                            block_weights_source,
+                            refresh_models_and_cache,
+                            lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
+                            "merge_studio_refresh_block_weight_source",
+                        )
+                    merge_block_profile = gr.HTML(
+                        elemental_weights.format_weight_editor_html(
+                            elemental_weights.parse_weight_spec(""), None, []
+                        )
+                    )
 
                 with gr.Accordion("Bake LoRA(s) into Checkpoint (Optional)", open=False):
                     gr.Markdown("Optionally apply one or multiple LoRAs (e.g. Turbo LoRA, Style LoRAs) directly into the checkpoint weights.")
@@ -1410,10 +1569,40 @@ def create_merge_studio_tab():
 
                     merge_preview_btn.click(fn=preview_metadata_handler, inputs=[merge_primary, merge_secondary, merge_tertiary], outputs=[merge_metadata_preview])
 
+                # Model A decides both whether the editor exists at all and
+                # how many blocks the rules have to work with.
+                merge_primary.change(
+                    fn=block_weights_visibility,
+                    inputs=[merge_primary],
+                    outputs=[block_weights_accordion],
+                    show_progress=False,
+                    queue=False,
+                )
+
+                # The profile redraws on anything that changes what the rules
+                # resolve to: the text, the base, or which model they apply to.
+                for _control in (merge_block_weights, merge_multiplier, merge_primary):
+                    _control.change(
+                        fn=block_weights_preview,
+                        inputs=[merge_primary, merge_block_weights, merge_multiplier],
+                        outputs=[merge_block_profile],
+                        show_progress=False,
+                        queue=False,
+                    )
+                block_weights_import.click(
+                    fn=import_block_weights,
+                    inputs=[block_weights_source],
+                    outputs=[merge_block_weights],
+                    queue=False,
+                )
+
                 merge_interp.change(
                     fn=merge_update_method,
                     inputs=[merge_interp],
-                    outputs=[merge_multiplier, secondary_col, tertiary_col, merge_interp, merge_config_source],
+                    outputs=[
+                        merge_multiplier, secondary_col, tertiary_col,
+                        merge_beta, merge_seed, merge_mode_html, merge_config_source,
+                    ],
                     show_progress=False,
                     queue=False,
                 )
@@ -1434,7 +1623,8 @@ def create_merge_studio_tab():
 
                 recipe_scalars = [
                     merge_primary, merge_secondary, merge_tertiary,
-                    merge_interp, merge_multiplier, anima_extend_ratio,
+                    merge_interp, merge_multiplier, merge_beta, merge_seed,
+                    merge_block_weights, anima_extend_ratio,
                     merge_save_mode, merge_device, merge_output_name, merge_discard,
                     merge_format, merge_clip_format, merge_vae_format,
                     merge_save_metadata, merge_config_source, merge_add_recipe, merge_bake_vae,
@@ -1454,7 +1644,11 @@ def create_merge_studio_tab():
                     outputs=(
                         recipe_scalars + recipe_dds + recipe_sts
                         + [lora_count_state] + merge_lora_row_layouts
-                        + [secondary_col, tertiary_col, recipe_status]
+                        + [
+                            secondary_col, tertiary_col, merge_beta, merge_seed,
+                            merge_mode_html, block_weights_accordion,
+                            merge_block_profile, recipe_status,
+                        ]
                     ),
                     queue=False,
                 ).then(
@@ -1479,6 +1673,9 @@ def create_merge_studio_tab():
                         merge_tertiary,
                         merge_interp,
                         merge_multiplier,
+                        merge_beta,
+                        merge_seed,
+                        merge_block_weights,
                         anima_extend_ratio,
                         merge_save_mode,
                         merge_device,

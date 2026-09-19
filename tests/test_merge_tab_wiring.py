@@ -1,0 +1,129 @@
+"""The merge tab is wired by position, and position is easy to get wrong.
+
+Gradio passes a `click`'s inputs to the handler positionally, and the recipe
+saver zips `RECIPE_FIELDS` against a list of controls. Insert a field in one
+place and forget the other and nothing raises: a value simply lands in the
+wrong parameter. That is how adding a beta slider could quietly make the
+multiplier arrive as the block-weight text.
+
+`scripts/merge_studio_ui.py` cannot be imported here -- it pulls in gradio and
+the WebUI's `modules` at module scope -- so these read the source. A count is
+a weaker check than calling the thing, and it is the one that catches the
+mistake this file exists for.
+"""
+
+import ast
+import os
+import unittest
+
+UI_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts",
+    "merge_studio_ui.py",
+)
+
+
+def ui_source() -> str:
+    with open(UI_PATH, encoding="utf-8") as f:
+        return f.read()
+
+
+def bracketed(source: str, opening: str) -> list[str]:
+    """The comma-separated entries of a bracketed list, by its opening text."""
+    start = source.index(opening) + len(opening)
+    depth = 1
+    for i in range(start, len(source)):
+        if source[i] == "[":
+            depth += 1
+        elif source[i] == "]":
+            depth -= 1
+            if depth == 0:
+                body = source[start:i]
+                break
+    else:  # pragma: no cover - a malformed file would fail earlier
+        raise AssertionError(f"unbalanced brackets after {opening!r}")
+    # Entries are bare names here; a nested call would need real parsing.
+    return [part.strip() for part in body.split(",") if part.strip()]
+
+
+class RecipeFieldsTests(unittest.TestCase):
+    def setUp(self):
+        self.source = ui_source()
+
+    def recipe_fields(self) -> list[str]:
+        for node in ast.walk(ast.parse(self.source)):
+            if (
+                isinstance(node, ast.Assign)
+                and getattr(node.targets[0], "id", "") == "RECIPE_FIELDS"
+            ):
+                return [element.value for element in node.value.elts]
+        raise AssertionError("RECIPE_FIELDS not found")
+
+    def test_every_field_has_exactly_one_control(self):
+        # `save_recipe_handler` zips these two together. A field without a
+        # control shifts every field after it by one.
+        fields = self.recipe_fields()
+        controls = bracketed(self.source, "recipe_scalars = [")
+        self.assertEqual(len(fields), len(controls), f"{fields}\n{controls}")
+
+    def test_the_fields_are_all_distinct(self):
+        fields = self.recipe_fields()
+        self.assertEqual(len(fields), len(set(fields)))
+
+    def test_the_settings_a_merge_needs_are_all_saved(self):
+        # A recipe that cannot reproduce the merge it was saved from is worse
+        # than no recipe, because it looks like it can.
+        for field in ("interp", "multiplier", "beta", "block_weights"):
+            self.assertIn(field, self.recipe_fields())
+
+
+class MergeHandlerInputsTests(unittest.TestCase):
+    def setUp(self):
+        self.source = ui_source()
+
+    def test_the_click_passes_exactly_what_the_handler_declares(self):
+        handler = next(
+            node
+            for node in ast.walk(ast.parse(self.source))
+            if isinstance(node, ast.FunctionDef) and node.name == "merge_handler"
+        )
+        declared = [a.arg for a in handler.args.args]
+        self.assertTrue(handler.args.vararg, "the component/LoRA tail is variadic")
+
+        # The click's inputs up to the first starred entry, which is where the
+        # variadic tail begins.
+        inputs = bracketed(self.source, "js=\"checkpointDoctorMergeProgress\",\n                    inputs=[")
+        positional = [name for name in inputs if not name.startswith("*")]
+        self.assertEqual(
+            len(declared),
+            len(positional),
+            f"handler declares {declared}\nclick passes {positional}",
+        )
+
+    def test_the_handler_forwards_every_ratio_it_receives(self):
+        # Adding a parameter and forgetting to pass it on is silent: the merge
+        # runs with the default and the recipe records the default too.
+        call = self.source[self.source.index("checkpoint_merge.merge_checkpoints("):]
+        call = call[: call.index("\n        )")]
+        for argument in ("beta=", "block_weights=", "anima_extend_ratio="):
+            self.assertIn(argument, call)
+
+
+class PerBlockEditorIsAnimaOnlyTests(unittest.TestCase):
+    def test_the_accordion_starts_hidden(self):
+        # It is absent for anything that is not Anima -- not disabled, not
+        # greyed out with an explanation. `L00-L27` assumes one numbered stack
+        # of blocks, which SDXL's three sections are not.
+        source = ui_source()
+        accordion = source[source.index('gr.Accordion(\n                    "Per-block weights'):]
+        self.assertIn("visible=False", accordion[:400])
+
+    def test_visibility_is_decided_by_the_architecture_and_not_a_name(self):
+        source = ui_source()
+        handler = source[source.index("def block_weights_visibility("):]
+        handler = handler[: handler.index("\n\n\ndef ")]
+        self.assertIn("_anima_block_count", handler)
+
+
+if __name__ == "__main__":
+    unittest.main()

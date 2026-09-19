@@ -20,6 +20,7 @@ import json
 import os
 import re
 
+import torch
 import torch.nn as nn
 
 from backend import memory_management, utils
@@ -46,18 +47,17 @@ from component_bundle import (
 )
 from forge_capabilities import vae_key_prefix_for_saving
 import anima_remap
+import elemental_weights
 from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from precision_stats import dominant_float_dtype, match_dtype
 from source_precision import apply_component_precision, try_match_source_dtypes
-
-INTERP_NO_INTERPOLATION = "no_interpolation"
-INTERP_WEIGHTED_SUM = "weighted_sum"
-INTERP_ADD_DIFFERENCE = "add_difference"
-
-
-class MergeError(RuntimeError):
-    pass
-
+from merge_modes import (
+    INTERP_NO_INTERPOLATION,
+    MergeError,
+    blend_tensors,
+    make_seeded_rand,
+    merge_mode,
+)
 
 def _sanitize_metadata(metadata: dict) -> dict[str, str]:
     out = {}
@@ -111,6 +111,9 @@ def _build_metadata(
     bake_vae: str | None = None,
     anima_remap: dict | None = None,
     components: list[dict] | None = None,
+    beta: float = 0.0,
+    block_weights: str = "",
+    seed: int = 0,
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -138,8 +141,19 @@ def _build_metadata(
         # No Interpolation takes a single model, so the multiplier slider's
         # value never entered the result. Recording it anyway leaves a number
         # in the recipe that reads like a blend ratio and means nothing.
-        if interp_method != INTERP_NO_INTERPOLATION:
+        if merge_mode(interp_method).needs_b:
             merge_recipe["multiplier"] = multiplier
+        # Only the modes that have one. A beta in the recipe of a mode that
+        # ignores it reads like a second ratio was applied, and none was.
+        if merge_mode(interp_method).needs_beta:
+            merge_recipe["beta"] = beta
+        # In the syntax it was written in, so the Inspector reads it back with
+        # the same parser and another tool can too.
+        if block_weights and str(block_weights).strip():
+            merge_recipe["block_weights"] = str(block_weights).strip()
+        # Without this a DARE recipe cannot reproduce its own merge.
+        if merge_mode(interp_method).needs_seed:
+            merge_recipe["seed"] = seed
         if components:
             # What went into this AIO, so another run can reconstruct the
             # same composition instead of inheriting whatever is configured.
@@ -371,6 +385,10 @@ def _merge_module_tree(
     translate_name=None,
     extend_name=None,
     extend_ratio: float = 0.0,
+    beta: float = 0.0,
+    weight_spec=None,
+    block_index=None,
+    rand=None,
 ) -> tuple[int, list[str]]:
     """translate_name: optional f(name_in_a) -> name_in_b_and_c, or None when
     the A-side module has no counterpart on the other side (used for
@@ -381,9 +399,26 @@ def _merge_module_tree(
     None (blocks the newer generation inserted, which have no counterpart),
     extend_name gives the B-side module the inserted block was originally
     copied from at initialization. With extend_ratio > 0 that module is
-    blended in at that weight instead of the block being left untouched."""
+    blended in at that weight instead of the block being left untouched.
+
+    beta: the second ratio, for the modes that have one. Ignored by the rest.
+
+    rand: a seeded `rand_like` for the modes that draw random numbers. One
+    generator per merge, advanced in `named_modules()` order, so the same
+    seed reproduces the same file.
+
+    weight_spec / block_index: per-block weights. `weight_spec` is a parsed
+    `elemental_weights.WeightSpec` whose base is already the multiplier, and
+    `block_index` turns a module path into the layer number the rules were
+    written against. Both or neither -- with either missing the merge is
+    uniform, which is what every merge was before this.
+    """
     if module_a is None:
         return 0, []
+    mode = merge_mode(interp_method)
+    per_block = (
+        weight_spec if weight_spec is not None and block_index is not None else None
+    )
     named_a = dict(module_a.named_modules())
     named_b = dict(module_b.named_modules()) if module_b is not None else {}
     named_c = dict(module_c.named_modules()) if module_c is not None else {}
@@ -412,6 +447,23 @@ def _merge_module_tree(
         if lookup is None and extend_name is not None and extend_ratio > 0.0:
             lookup = extend_name(name)
             effective_multiplier = extend_ratio
+        elif per_block is not None:
+            # `elif`, not `if`: an inserted block's extend_ratio wins over a
+            # per-block rule. The rule was written for a layer that exists in
+            # both models, and an inserted one exists in neither Model B nor
+            # the numbering the rule was written against.
+            #
+            # A module outside the numbered stack -- an embedder, the final
+            # norm -- has no layer a rule could name, so it takes the spec's
+            # base. Not the slider: when the rule text carries its own base
+            # that is the one in force, and leaving these on the slider would
+            # merge the stack and everything around it on different ratios.
+            block = block_index(name)
+            effective_multiplier = (
+                per_block.effective_base
+                if block is None
+                else elemental_weights.resolve_weight(per_block, block, name)
+            )
         m_b = named_b.get(lookup) if lookup is not None else None
         if m_b is None:
             skipped.append(name)
@@ -427,23 +479,21 @@ def _merge_module_tree(
         if w_b.device != dev:
             w_b = w_b.to(device=dev)
 
-        if interp_method == INTERP_WEIGHTED_SUM:
-            merged = w_a.lerp(w_b, effective_multiplier)
-        elif interp_method == INTERP_ADD_DIFFERENCE:
+        w_c = None
+        if mode.needs_c:
             m_c = named_c.get(lookup)
-            if m_c is None:
-                skipped.append(name)
-                continue
-            w_c = weight_as_float(m_c)
+            w_c = weight_as_float(m_c) if m_c is not None else None
             if w_c is None or w_c.shape != w_a.shape:
                 skipped.append(name)
                 continue
             if w_c.device != dev:
                 w_c = w_c.to(device=dev)
-            merged = w_a + effective_multiplier * (w_b - w_c)
-            del w_c
-        else:
-            raise MergeError(f"Unknown interpolation method: {interp_method}")
+
+        merged = blend_tensors(
+            interp_method, effective_multiplier, beta, w_a, w_b, w_c,
+            xp=torch, rand=rand,
+        )
+        del w_c
 
         set_module_weight(m_a, merged, target_format=None)
         merged_count += 1
@@ -460,19 +510,22 @@ def _merge_module_tree(
                 if b_b_f.device != dev:
                     b_b_f = b_b_f.to(device=dev)
 
-                if interp_method == INTERP_WEIGHTED_SUM:
-                    new_bias = b_a.lerp(b_b_f, effective_multiplier)
-                else:
+                b_c_f = None
+                if mode.needs_c:
                     m_c = named_c.get(lookup)
                     b_c = getattr(m_c, "bias", None) if m_c is not None else None
                     if b_c is not None and b_c.shape == b_a.shape:
                         b_c_f = b_c.data.float()
                         if b_c_f.device != dev:
                             b_c_f = b_c_f.to(device=dev)
-                        new_bias = b_a + effective_multiplier * (b_b_f - b_c_f)
-                        del b_c_f
-                    else:
-                        new_bias = None
+                # A module whose weight merged but whose bias has no
+                # counterpart in C leaves the bias alone rather than blending
+                # it on different terms from the weight beside it.
+                new_bias = blend_tensors(
+                    interp_method, effective_multiplier, beta, b_a, b_b_f, b_c_f,
+                    xp=torch, rand=rand,
+                )
+                del b_c_f
                 if new_bias is not None:
                     m_a.bias = nn.Parameter(new_bias.to(dtype=m_a.bias.dtype, device=dev), requires_grad=False)
                 del b_a, b_b_f
@@ -481,6 +534,39 @@ def _merge_module_tree(
             progress_cb(i + 1, total, name)
 
     return merged_count, skipped
+
+
+def _per_block_spec(block_weights: str, multiplier: float, engine_a, diffusion_a):
+    """The parsed per-block rules for this merge, or None for a uniform one.
+
+    Refuses rather than ignores. Per-block weights are enabled for Anima only
+    -- `L00-L27` assumes one numbered stack, which SDXL's three sections and
+    Flux's two parallel series are not -- and a recipe carrying rules that
+    silently did nothing would produce a uniform merge under a name that says
+    otherwise.
+    """
+    if not block_weights or not str(block_weights).strip():
+        return None
+
+    if not anima_remap.is_anima_engine(engine_a):
+        raise MergeError(
+            "Per-block weights are for Anima only. The layer syntax assumes one "
+            "numbered stack of blocks, which this architecture does not have. "
+            "Clear the per-block rules to merge it uniformly."
+        )
+
+    spec = elemental_weights.spec_with_base(
+        elemental_weights.parse_weight_spec(block_weights), multiplier
+    )
+    problems = elemental_weights.validate_spec(
+        spec, anima_remap.block_count(diffusion_a)
+    )
+    fatal = [p for p in problems if "still applies" not in p]
+    if fatal:
+        raise MergeError("Per-block weights: " + " ".join(fatal))
+    if not spec.rules:
+        return None
+    return spec
 
 
 def merge_checkpoints(
@@ -504,11 +590,17 @@ def merge_checkpoints(
     anima_extend_ratio: float = 0.0,
     component_selections: list[dict] | None = None,
     progress_cb=None,
+    beta: float = 0.0,
+    block_weights: str = "",
+    seed: int = 0,
 ) -> dict:
-    if interp_method != INTERP_NO_INTERPOLATION and not secondary_name:
-        raise MergeError("This interpolation method requires a Secondary Model (B).")
-    if interp_method == INTERP_ADD_DIFFERENCE and not tertiary_name:
-        raise MergeError("Add Difference requires a Tertiary Model (C).")
+    # Which models a mode needs is a property of the mode, declared once in
+    # MERGE_MODES rather than restated here every time one is added.
+    mode = merge_mode(interp_method)
+    if mode.needs_b and not secondary_name:
+        raise MergeError(f"{mode.label} requires a Secondary Model (B).")
+    if mode.needs_c and not tertiary_name:
+        raise MergeError(f"{mode.label} requires a Tertiary Model (C).")
 
     # Decided before anything expensive happens. With no selections this is the
     # traditional path, unchanged down to the global module list it reads.
@@ -631,22 +723,42 @@ def merge_checkpoints(
             if progress_cb:
                 progress_cb(anima_remap_note["message"])
 
+        # Per-block weights apply to the diffusion model and nowhere else:
+        # the layer syntax names positions in one numbered stack, and neither
+        # the text encoder nor the VAE has one.
+        # One generator for the whole merge, so the same seed reproduces the
+        # same file. Only the stochastic modes ask for it.
+        merge_rand = make_seeded_rand(seed, torch, target_device) if mode.needs_seed else None
+
+        unet_weight_spec = _per_block_spec(
+            block_weights, multiplier, engine_a, diffusion_a
+        )
+        if unet_weight_spec is not None and progress_cb:
+            progress_cb(
+                f"Per-block weights: {len(unet_weight_spec.rules)} rule(s) over a "
+                f"base of {unet_weight_spec.effective_base:g}"
+            )
+
         if progress_cb:
             progress_cb("Merging diffusion model...")
         merged_unet, skipped_unet = _merge_module_tree(
-            diffusion_a, diffusion_b, diffusion_c, interp_method, multiplier,
+            diffusion_a, diffusion_b, diffusion_c, interp_method, multiplier, beta=beta,
             target_device=target_device,
             progress_cb=(lambda i, t, n: progress_cb(f"Merging UNet ({i}/{t}): {n}")) if progress_cb else None,
             translate_name=unet_translate,
             extend_name=unet_extend,
             extend_ratio=anima_extend_ratio,
+            rand=merge_rand,
+            weight_spec=unet_weight_spec,
+            block_index=anima_remap.main_block_index if unet_weight_spec else None,
         )
 
         if clip_a is not None and composition.merge_text_encoder:
             if progress_cb:
                 progress_cb("Merging text encoder...")
             merged_clip, skipped_clip = _merge_module_tree(
-                clip_a, clip_b, clip_c, interp_method, multiplier,
+                clip_a, clip_b, clip_c, interp_method, multiplier, beta=beta,
+                rand=merge_rand,
                 target_device=target_device,
                 progress_cb=(lambda i, t, n: progress_cb(f"Merging CLIP ({i}/{t}): {n}")) if progress_cb else None,
             )
@@ -664,7 +776,8 @@ def merge_checkpoints(
             if progress_cb:
                 progress_cb("Merging VAE...")
             merged_vae, skipped_vae = _merge_module_tree(
-                vae_a, vae_b, vae_c, interp_method, multiplier,
+                vae_a, vae_b, vae_c, interp_method, multiplier, beta=beta,
+                rand=merge_rand,
                 target_device=target_device,
                 progress_cb=(lambda i, t, n: progress_cb(f"Merging VAE ({i}/{t}): {n}")) if progress_cb else None,
             )
@@ -875,6 +988,9 @@ def merge_checkpoints(
                 bake_vae=bake_vae,
                 anima_remap=anima_remap_note,
                 components=component_provenance(composition.plan, with_hashes=True),
+                beta=beta,
+                block_weights=block_weights,
+                seed=seed,
             )
         )
 

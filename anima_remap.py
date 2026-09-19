@@ -63,9 +63,13 @@ _BLOCK_RE = re.compile(r"^(blocks\.)(\d+)(\.|$)")
 _DISK_BLOCK_RE = re.compile(r"^(?:net\.|model\.diffusion_model\.)?blocks\.(\d+)\.")
 
 
-def _main_block_index(name: str) -> int | None:
+def main_block_index(name: str) -> int | None:
     """Main-stack block index for a module path relative to diffusion_model,
-    or None if this path isn't a root-level block."""
+    or None if this path isn't a root-level block.
+
+    Public because the merge loop needs it too: per-block weights are written
+    as layer ranges, and this is what turns a module path back into the layer
+    number a rule was written against."""
     m = _BLOCK_RE.match(name)
     return int(m.group(2)) if m else None
 
@@ -237,7 +241,7 @@ def make_extend_translator(inserted: dict[int, int]):
     them is opt-in rather than the default."""
 
     def extend(name: str) -> str | None:
-        target = _main_block_index(name)
+        target = main_block_index(name)
         if target is None:
             return None
         source = inserted.get(target)
@@ -257,7 +261,7 @@ def make_name_translator(frozen: dict[int, int]):
     semantic connector, embedders, final_layer -- is returned untouched."""
 
     def translate(name: str) -> str | None:
-        target = _main_block_index(name)
+        target = main_block_index(name)
         if target is None:
             return name
         source = frozen.get(target)
