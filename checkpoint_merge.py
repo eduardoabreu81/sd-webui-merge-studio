@@ -536,7 +536,9 @@ def _merge_module_tree(
     return merged_count, skipped
 
 
-def _per_block_spec(block_weights: str, multiplier: float, engine_a, diffusion_a):
+def _per_block_spec(
+    block_weights: str, multiplier: float, engine_a, diffusion_a, interp_method: str
+):
     """The parsed per-block rules for this merge, or None for a uniform one.
 
     Refuses rather than ignores. Per-block weights are enabled for Anima only
@@ -547,6 +549,13 @@ def _per_block_spec(block_weights: str, multiplier: float, engine_a, diffusion_a
     """
     if not block_weights or not str(block_weights).strip():
         return None
+
+    if not merge_mode(interp_method).needs_b:
+        raise MergeError(
+            f"{merge_mode(interp_method).label} copies Model A through without "
+            "blending, so there is no multiplier for a per-block rule to "
+            "replace. Clear the rules, or pick a mode that merges."
+        )
 
     if not anima_remap.is_anima_engine(engine_a):
         raise MergeError(
@@ -731,7 +740,7 @@ def merge_checkpoints(
         merge_rand = make_seeded_rand(seed, torch, target_device) if mode.needs_seed else None
 
         unet_weight_spec = _per_block_spec(
-            block_weights, multiplier, engine_a, diffusion_a
+            block_weights, multiplier, engine_a, diffusion_a, interp_method
         )
         if unet_weight_spec is not None and progress_cb:
             progress_cb(

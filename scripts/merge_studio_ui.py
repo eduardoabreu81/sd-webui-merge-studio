@@ -644,7 +644,9 @@ def load_recipe_handler(recipe_name: str):
                 gr.update(visible=mode.needs_beta),
                 gr.update(visible=mode.needs_seed),
                 gr.update(value=merge_modes.merge_mode_panel(mode.key)),
-                block_weights_visibility(settings.get("primary", "")),
+                block_weights_visibility(
+                    settings.get("primary", ""), settings.get("interp", "")
+                ),
                 gr.update(
                     value=block_weights_preview(
                         settings.get("primary", ""),
@@ -698,15 +700,28 @@ def _anima_block_count(checkpoint_name: str) -> int | None:
     return blocks if isinstance(blocks, int) and blocks > 0 else None
 
 
-def block_weights_visibility(primary_name: str):
-    """Per-block weights are shown for Anima and absent for everything else.
+def block_weights_visibility(primary_name: str, interp_label: str = ""):
+    """Per-block weights are shown when they can do something, and absent
+    otherwise.
 
-    Not disabled with an explanation, not greyed out -- absent. `L00-L27`
-    assumes one numbered stack of blocks, which SDXL's three sections and
-    Flux's two parallel series are not, and offering a control that cannot
-    work is worse than not offering it.
+    Two conditions, both structural. **Anima**, because `L00-L27` assumes one
+    numbered stack of blocks, which SDXL's three sections and Flux's two
+    parallel series are not. And **a mode that blends**: the rules replace the
+    Multiplier per layer, and No Interpolation has no multiplier to replace --
+    it copies Model A through.
+
+    Not disabled with an explanation, not greyed out -- absent. Offering a
+    control that cannot work is worse than not offering it.
     """
-    return gr.update(visible=_anima_block_count(primary_name) is not None)
+    if _anima_block_count(primary_name) is None:
+        return gr.update(visible=False)
+    try:
+        blends = merge_modes.merge_mode(
+            INTERP_LABEL_TO_KEY.get(interp_label, interp_label)
+        ).needs_b
+    except Exception:
+        blends = True
+    return gr.update(visible=blends)
 
 
 def block_weights_preview(primary_name: str, text: str, multiplier: float):
@@ -1368,8 +1383,12 @@ def create_merge_studio_tab():
                         placeholder="L05-L09:self_attn.q_proj self_attn.k_proj:0.08",
                     )
                     with gr.Row(equal_height=True):
+                        # Every checkpoint, not only the ones that carry
+                        # rules: finding those means reading 227 headers off
+                        # a network share at build time. "Import rules" says
+                        # so when the one you picked has none.
                         block_weights_source = gr.Dropdown(
-                            label="Start from a checkpoint that already has rules",
+                            label="Copy the rules from another checkpoint",
                             choices=sorted(sd_models.checkpoint_tiles()),
                             scale=4,
                         )
@@ -1571,13 +1590,14 @@ def create_merge_studio_tab():
 
                 # Model A decides both whether the editor exists at all and
                 # how many blocks the rules have to work with.
-                merge_primary.change(
-                    fn=block_weights_visibility,
-                    inputs=[merge_primary],
-                    outputs=[block_weights_accordion],
-                    show_progress=False,
-                    queue=False,
-                )
+                for _control in (merge_primary, merge_interp):
+                    _control.change(
+                        fn=block_weights_visibility,
+                        inputs=[merge_primary, merge_interp],
+                        outputs=[block_weights_accordion],
+                        show_progress=False,
+                        queue=False,
+                    )
 
                 # The profile redraws on anything that changes what the rules
                 # resolve to: the text, the base, or which model they apply to.

@@ -118,11 +118,26 @@ class PerBlockEditorIsAnimaOnlyTests(unittest.TestCase):
         accordion = source[source.index('gr.Accordion(\n                    "Per-block weights'):]
         self.assertIn("visible=False", accordion[:400])
 
-    def test_visibility_is_decided_by_the_architecture_and_not_a_name(self):
+    def visibility_handler(self) -> str:
         source = ui_source()
         handler = source[source.index("def block_weights_visibility("):]
-        handler = handler[: handler.index("\n\n\ndef ")]
-        self.assertIn("_anima_block_count", handler)
+        return handler[: handler.index("\n\n\ndef ")]
+
+    def test_visibility_is_decided_by_the_architecture_and_not_a_name(self):
+        self.assertIn("_anima_block_count", self.visibility_handler())
+
+    def test_the_mode_also_has_to_be_one_that_blends(self):
+        # The rules replace the Multiplier per layer, and No Interpolation has
+        # no multiplier to replace -- it copies Model A through. Leaving the
+        # editor on screen there means offering rules that do nothing.
+        self.assertIn("needs_b", self.visibility_handler())
+
+    def test_both_model_a_and_the_mode_drive_the_accordion(self):
+        source = ui_source()
+        binding = source[source.index("for _control in (merge_primary, merge_interp):"):]
+        binding = binding[: binding.index("\n\n")]
+        self.assertIn("block_weights_visibility", binding)
+        self.assertIn("inputs=[merge_primary, merge_interp]", binding)
 
 
 if __name__ == "__main__":
