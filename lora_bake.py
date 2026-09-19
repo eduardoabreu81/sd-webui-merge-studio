@@ -40,11 +40,29 @@ def _import_lora_networks():
 
 
 def available_loras() -> dict[str, str]:
-    """name -> absolute path, to populate the UI dropdown."""
+    """name -> absolute path, to populate the UI dropdown.
+
+    Fills Forge's cache once and then trusts it, which is what makes repeated
+    reads cheap -- and what makes a LoRA downloaded after startup invisible
+    until something calls `reload_loras`.
+    """
     networks = _import_lora_networks()
     if not networks.available_networks:
         networks.list_available_networks()
     return {name: net.filename for name, net in networks.available_networks.items()}
+
+
+def reload_loras() -> None:
+    """Re-scan the LoRA directory from disk.
+
+    What the refresh buttons need, and the LoRA counterpart of
+    `sd_models.list_models`. It runs the same `list_available_networks` Forge
+    runs at startup, which also clears the alias tables -- rebuilding the name
+    dictionary alone would leave a renamed or deleted file still resolvable
+    under its old alias.
+    """
+    networks = _import_lora_networks()
+    networks.list_available_networks()
 
 
 def _lora_activation_text(lora_path: str) -> tuple[str, str]:

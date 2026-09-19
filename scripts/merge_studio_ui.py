@@ -1244,7 +1244,7 @@ def create_merge_studio_tab():
                                 scale=2,
                                 info="For Anima checkpoints, consider starting around 0.6-0.8 (e.g. 0.6 for Turbo)." if i == 1 else None,
                             )
-                            create_refresh_button([merge_lora_dd], lambda: None, lambda: {"choices": _lora_choices()}, f"merge_studio_lora_refresh_{i}")
+                            create_refresh_button([merge_lora_dd], lora_bake.reload_loras, lambda: {"choices": _lora_choices()}, f"merge_studio_lora_refresh_{i}")
                             del_btn = gr.Button("X", elem_classes=["tool", "merge-studio-remove-lora-btn"], variant="stop")
                             merge_lora_rows.append((merge_lora_dd, merge_strength))
                             merge_lora_row_layouts.append(lora_row_layout)
@@ -1634,6 +1634,14 @@ def create_merge_studio_tab():
 
                     def refresh_inspector_choices():
                         sd_models.list_models()
+                        # The inspector lists LoRAs as well, so re-scanning
+                        # only checkpoints and modules left a freshly
+                        # downloaded one missing from a dropdown the button
+                        # had just claimed to refresh.
+                        try:
+                            lora_bake.reload_loras()
+                        except Exception:
+                            pass
                         try:
                             from modules_forge import main_entry
 
