@@ -20,6 +20,7 @@ import aux_inspector  # noqa: E402
 import checkpoint_merge  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
+import lora_extract  # noqa: E402
 import quant_repair  # noqa: E402
 import component_recipes
 import component_ui
@@ -1005,6 +1006,140 @@ def quantize_handler(id_task, checkpoint_name: str, format_label: str, save_mode
 # --- Tab layout -----------------------------------------------------------
 
 
+# --- Extract LoRA ----------------------------------------------------------
+
+#: Label -> safetensors dtype code, in the vocabulary lora_extract writes.
+EXTRACT_DTYPE_CHOICES = [("BF16", "BF16"), ("FP16", "F16"), ("FP32", "F32")]
+
+
+def _lora_output_dir() -> str:
+    """Where Forge looks for LoRAs, so an extraction lands where it is usable.
+
+    Asks the option first and falls back to the directory the loader is already
+    reading from: a user who moved their LoRAs should not have to move the
+    result too.
+    """
+    configured = getattr(shared.cmd_opts, "lora_dir", None)
+    if configured and os.path.isdir(configured):
+        return configured
+    for path in lora_bake.available_loras().values():
+        parent = os.path.dirname(path)
+        if os.path.isdir(parent):
+            return parent
+    return os.path.join(getattr(shared, "models_path", "models"), "Lora")
+
+
+def _suggested_extract_name(original: str, tuned: str, rank: int) -> str:
+    """A filename that says what the file is without being opened."""
+    def stem(name: str) -> str:
+        base = os.path.splitext(os.path.basename(name or ""))[0]
+        return "".join(c for c in base if c.isalnum() or c in "-_") or "model"
+
+    return f"{stem(tuned)}-minus-{stem(original)}-r{int(rank)}.safetensors"
+
+
+def _extract_plan(original: str, tuned: str, rank, conv_rank, dtype: str):
+    if not original or not tuned:
+        return None
+    return lora_extract.plan_extraction(
+        _checkpoint_path(original),
+        _checkpoint_path(tuned),
+        rank=int(rank),
+        conv_rank=int(conv_rank),
+        output_dtype=dtype,
+    )
+
+
+def extract_preview_handler(original: str, tuned: str, rank, conv_rank, dtype: str):
+    """Badges, the plan, and a suggested filename -- all from headers.
+
+    Runs on every change because it costs a header read: the point of the panel
+    is that the consequences of a rank change are visible before the run, not
+    after it.
+    """
+    o_info = _get_cached_checkpoint_info(original)
+    t_info = _get_cached_checkpoint_info(tuned)
+    o_html = format_badges_html(o_info) if o_info else ""
+    t_html = format_badges_html(t_info, compatible_with_info=o_info) if t_info else ""
+
+    try:
+        plan = _extract_plan(original, tuned, rank, conv_rank, dtype)
+    except Exception as e:
+        return o_html, t_html, _err_html(e), gr.update()
+
+    if plan is None:
+        return o_html, t_html, "", gr.update()
+
+    return (
+        o_html,
+        t_html,
+        lora_extract.format_extraction_preview_html(plan),
+        gr.update(placeholder=_suggested_extract_name(original, tuned, rank)),
+    )
+
+
+def extract_run_handler(
+    id_task,
+    original: str,
+    tuned: str,
+    rank,
+    conv_rank,
+    dtype: str,
+    device: str,
+    min_diff,
+    filename: str,
+):
+    try:
+        plan = _extract_plan(original, tuned, rank, conv_rank, dtype)
+        if plan is None:
+            raise ValueError("Select both an original and a tuned checkpoint.")
+        if not plan.ok:
+            # Already shown in the preview; repeated here because the user may
+            # have pressed the button without reading it.
+            return lora_extract.format_extraction_preview_html(plan)
+
+        name = (filename or "").strip() or _suggested_extract_name(original, tuned, rank)
+        name = os.path.basename(name)
+        if not name.endswith(".safetensors"):
+            name += ".safetensors"
+        output_path = os.path.join(_lora_output_dir(), name)
+        if os.path.exists(output_path):
+            raise ValueError(f"{name} already exists; pick another name.")
+
+        def progress_cb(done, total, key):
+            if not total:
+                return
+            pct = 100 * done / total
+            shared.state.textinfo = f"Extracting {name}: {pct:.0f}%"
+            shared.state.sampling_steps = 100
+            shared.state.sampling_step = int(pct)
+
+        result = lora_extract.extract_lora(
+            plan,
+            output_path,
+            min_diff=float(min_diff),
+            device=device,
+            progress_cb=progress_cb,
+        )
+    except Exception as e:
+        return _err_html(e)
+
+    size = lora_extract._human_bytes(result["bytes"])
+    skipped = (
+        f" &nbsp;&bull;&nbsp; {result['skipped']} modules below the difference floor were left out"
+        if result["skipped"]
+        else ""
+    )
+    return (
+        "<div style='margin-top: 6px; padding: 8px 10px; border-radius: 4px; "
+        "background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; font-size: 12px;'>"
+        f"<b style='color: #6ee7b7;'>Saved {html.escape(name)}</b> &nbsp;&bull;&nbsp; "
+        f"{result['tensors']} tensors &nbsp;&bull;&nbsp; {size}{skipped}"
+        "<div style='color: #9ca3af; margin-top: 4px;'>Press the refresh button on any LoRA list to see it.</div>"
+        "</div>"
+    )
+
+
 def create_merge_studio_tab():
     with gr.Blocks(analytics_enabled=False) as merge_studio_interface:
         gr.Markdown("## Merge Studio")
@@ -1389,6 +1524,97 @@ def create_merge_studio_tab():
                     js="checkpointDoctorFixProgress",
                     inputs=[dummy_component, doctor_checkpoint, doctor_mode, doctor_new_name],
                     outputs=[doctor_checkpoint, doctor_fix_html],
+                    show_progress=False,
+                )
+
+            with gr.Tab("Extract LoRA"):
+                gr.Markdown(
+                    "Turn the difference between two checkpoints into a LoRA. Pick the model a tune **started from** "
+                    "and the tuned result; what comes out is an adapter that reproduces the change, at a fraction of "
+                    "the size. The panel below shows exactly what would be subtracted **before** anything runs."
+                )
+                gr.Markdown(
+                    "Both checkpoints must be the same architecture and stored in **FP32, FP16 or BF16** — "
+                    "a difference between quantized weights is noise, not a difference, so those are refused."
+                )
+
+                with gr.Row():
+                    with gr.Column():
+                        extract_original = gr.Dropdown(
+                            label="Original — what the tune started from",
+                            choices=sorted(sd_models.checkpoint_tiles()),
+                        )
+                        extract_original_badge = gr.HTML("")
+                    with gr.Column():
+                        extract_tuned = gr.Dropdown(
+                            label="Tuned — the finished model",
+                            choices=sorted(sd_models.checkpoint_tiles()),
+                        )
+                        extract_tuned_badge = gr.HTML("")
+
+                with gr.Row():
+                    create_refresh_button(
+                        [extract_original, extract_tuned],
+                        sd_models.list_models,
+                        lambda: {"choices": sorted(sd_models.checkpoint_tiles())},
+                        "merge_studio_refresh_extract",
+                    )
+
+                extract_preview = gr.HTML("")
+
+                with gr.Row():
+                    extract_rank = gr.Slider(
+                        label="Rank", minimum=4, maximum=256, step=4, value=64,
+                        info="Higher keeps more of the difference and costs more disk. 64 is a sane default.",
+                    )
+                    extract_conv_rank = gr.Slider(
+                        label="Conv rank", minimum=1, maximum=128, step=1, value=16,
+                        info="Used only by UNet models (SD 1.5 / SDXL). Kernels need less rank than linear layers.",
+                    )
+
+                with gr.Row():
+                    extract_dtype = gr.Dropdown(
+                        label="Output precision", choices=EXTRACT_DTYPE_CHOICES, value="BF16"
+                    )
+                    extract_device = gr.Radio(
+                        label="Compute on",
+                        choices=[("Auto", "auto"), ("GPU", "cuda"), ("CPU", "cpu")],
+                        value="auto",
+                        info="The decomposition is many SVDs; on CPU expect minutes to tens of minutes.",
+                    )
+                    extract_min_diff = gr.Number(
+                        label="Difference floor", value=1e-4,
+                        info="Modules that moved less than this are left out instead of contributing noise.",
+                    )
+
+                extract_filename = gr.Textbox(
+                    label="Save as", placeholder="picked automatically from the two model names"
+                )
+                extract_btn = gr.Button("Extract LoRA", variant="primary")
+                extract_result = gr.HTML("")
+
+                _extract_inputs = [
+                    extract_original, extract_tuned, extract_rank, extract_conv_rank, extract_dtype,
+                ]
+                _extract_outputs = [
+                    extract_original_badge, extract_tuned_badge, extract_preview, extract_filename,
+                ]
+                for _control in _extract_inputs:
+                    _control.change(
+                        fn=extract_preview_handler,
+                        inputs=_extract_inputs,
+                        outputs=_extract_outputs,
+                        show_progress=False,
+                    )
+
+                extract_btn.click(fn=lambda: "", outputs=[extract_result], queue=False, show_progress=False).then(
+                    fn=call_queue.wrap_gradio_gpu_call(extract_run_handler, extra_outputs=lambda: [gr.skip()]),
+                    inputs=[
+                        dummy_component, extract_original, extract_tuned, extract_rank,
+                        extract_conv_rank, extract_dtype, extract_device, extract_min_diff,
+                        extract_filename,
+                    ],
+                    outputs=[extract_result],
                     show_progress=False,
                 )
 
