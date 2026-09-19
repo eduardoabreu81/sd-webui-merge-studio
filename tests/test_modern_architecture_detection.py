@@ -290,5 +290,52 @@ class VendoredTablesAreUnchangedTests(unittest.TestCase):
         self.assertEqual(list(range(28)), target_to_source(28, 28))
 
 
+class AnimaShipsUnderTwoNamespacesTests(unittest.TestCase):
+    """Anima checkpoints do not agree on where to put their weights.
+
+    Measured across nine reference checkpoints on 2026-09-19. `net.`:
+    `anima_baseV10` (28), `Anima-2.9B-preview-v1` (40), `Anima-3.8B-v1.1`
+    (52). `model.diffusion_model.`: `anima-turbo-v1.0`,
+    `anima-aesthetic-v1.0`, `anima-aesthetic-v1.0b`, `anima_turboV11`,
+    `anima_aestheticV11` (all 28).
+
+    **The split is not chronological** -- the two newest releases use `net.`
+    and the oldest derivatives use `model.diffusion_model.` What it lines up
+    with is base versus published derivative. The six 28-block files are
+    structurally identical once the prefix is stripped: same 685 keys, same
+    shapes, same dtypes, and byte-identical payload sizes.
+
+    So the two-prefix handling in `anima_remap._DISK_BLOCK_RE` and in
+    `architecture_guess.state_dict_from_header` is not defensive coding
+    against a hypothetical. Dropping either branch breaks half the base
+    models in the library.
+    """
+
+    def test_both_namespaces_give_the_same_architecture_and_depth(self):
+        from anima_remap import block_count_from_keys
+
+        # Every depth in the library appears under `net.`, and the 28-block
+        # one appears under both.
+        for root in ("net.", "model.diffusion_model."):
+            for blocks in (28, 40, 52):
+                with self.subTest(root=root, blocks=blocks):
+                    keys = anima_keys(blocks=blocks, root=root)
+                    head = header(*keys)
+                    self.assertEqual("anima", infer_architecture_id(head))
+                    self.assertEqual(blocks, block_count_from_keys(keys))
+
+    def test_the_header_driven_detector_leaves_both_alone(self):
+        # `state_dict_from_header` only adds the diffusion namespace when
+        # neither is present. Adding it on top of `net.` would bury the keys
+        # the detector matches on.
+        from architecture_guess import state_dict_from_header
+
+        for root in ("net.", "model.diffusion_model."):
+            with self.subTest(root=root):
+                head = header(*anima_keys(blocks=4, root=root))
+                built = state_dict_from_header(head)
+                self.assertTrue(all(k.startswith(root) for k in built), sorted(built)[:3])
+
+
 if __name__ == "__main__":
     unittest.main()

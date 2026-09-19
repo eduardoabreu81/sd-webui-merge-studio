@@ -13,9 +13,12 @@ from checkpoint_inspector import _architecture_label
 
 class ArchitectureLabelTests(unittest.TestCase):
     def test_each_anima_generation_is_named(self):
+        # The depth stays on the badge beside the name: it is the number the
+        # merge-order warning quotes and the bound a per-block weight rule has
+        # to stay inside. 28 is the base release and has no suffix.
         for blocks, expected in ((28, "Anima (DiT), 28-block"),
-                                 (40, "Anima (DiT), 40-block"),
-                                 (52, "Anima (DiT), 52-block")):
+                                 (40, "Anima 2.9B (DiT), 40-block"),
+                                 (52, "Anima 3.8B (DiT), 52-block")):
             with self.subTest(blocks=blocks):
                 label = _architecture_label(
                     {"architecture": "Anima (DiT)", "block_count": blocks}
@@ -38,6 +41,14 @@ class ArchitectureLabelTests(unittest.TestCase):
         self.assertEqual(
             "Anima (DiT)",
             _architecture_label({"architecture": "Anima (DiT)", "block_count": None}),
+        )
+
+    def test_an_unknown_depth_keeps_the_count_without_inventing_a_name(self):
+        # Anima could ship a fourth depth tomorrow. Printing the number it
+        # actually has beats printing a generation it does not.
+        self.assertEqual(
+            "Anima (DiT), 36-block",
+            _architecture_label({"architecture": "Anima (DiT)", "block_count": 36}),
         )
 
     def test_missing_architecture_does_not_crash_the_badge(self):

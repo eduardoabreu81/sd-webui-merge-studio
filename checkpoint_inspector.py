@@ -18,6 +18,11 @@ import struct
 from typing import Any
 
 from anima_remap import block_count_from_keys
+from architecture_guess import (
+    anima_generation,
+    detect_prediction_markers,
+    guess_architecture,
+)
 
 
 def _esc(value: Any) -> str:
@@ -241,6 +246,20 @@ def get_model_family(arch: str) -> str:
         return "sdxl"
     if "sd 1.5" in arch_lower or "sd 2.1" in arch_lower:
         return "sd1"
+    # Architectures only the detector can name. Without these every one of them
+    # is "other", and two "other" models never raise an incompatibility warning
+    # -- so a Z-Image and an ERNIE would look mergeable.
+    for fragment, family in (
+        ("chroma", "chroma"),
+        ("z-image", "zimage"),
+        ("lumina", "lumina"),
+        ("qwen-image", "qwenimage"),
+        ("krea", "krea"),
+        ("ernie", "ernie"),
+        ("pid", "pid"),
+    ):
+        if fragment in arch_lower:
+            return family
     return "other"
 
 
@@ -543,6 +562,15 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
 
     filename = os.path.basename(filepath)
     arch = _detect_architecture(keys, has_llm_adapter, metadata=metadata, filename=filename)
+    # Forge's own detector knows eighteen architectures where the pattern
+    # matching above knows six families; it takes the label whenever it can
+    # answer, and hands back the pattern-matched one whenever it cannot.
+    #
+    # Only the label. `infer_architecture_id` below is what picks component
+    # slots, and a wrong answer there puts an encoder in a slot the
+    # architecture never reads -- so it stays on the evidence it already trusts.
+    guess = guess_architecture(header, arch)
+    arch = guess.label
     architecture_id = infer_architecture_id(header, filename)
     precision = _detect_precision(header, filepath, data_offset)
 
@@ -577,6 +605,13 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         "file_size": file_size,
         "size_str": size_str,
         "architecture": arch,
+        # Who named it: the detector's own class name, or None when the label
+        # came from pattern matching. Worth keeping apart, because one is the
+        # loader's opinion and the other is a guess from key prefixes.
+        #
+        # The upstream repo is deliberately not carried. The detector knows it,
+        # but the name is the answer to the question anyone is asking here.
+        "architecture_detector": guess.detector,
         # A stable id for code, next to the human-readable label above. It is a
         # provisional hint -- a loaded engine's capability profile overrides it.
         "architecture_id": architecture_id,
@@ -595,6 +630,9 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         # What each embedded component actually is, which namespace it occupies,
         # and whether this architecture declares that namespace.
         "embedded_components": embedded_components_from_keys(keys, architecture_id),
+        # How the model has to be sampled, when the file says so. Structural,
+        # functionally decisive, and shown nowhere before this.
+        "prediction": detect_prediction_markers(header),
         "recipe": recipe,
         "comfy_recipe": comfy_recipe,
         "models": models,
@@ -701,12 +739,60 @@ def _architecture_label(info: dict[str, Any]) -> str:
     used to guard merge order; it just never reached the badge, so all three
     generations displayed identically. The LoRA inspector already labels its
     own with "Anima <n>-block".
+
+    The depth stays on the badge next to the generation name. It is the number
+    the merge-order warning quotes, and the one a per-block weight rule has to
+    stay inside, so replacing it with a marketing name would cost more than it
+    gains. Forge's detector returns only "Anima", so the names are ours.
     """
     arch = str(info.get("architecture", "Unknown"))
     blocks = info.get("block_count")
-    if get_model_family(arch) == "anima" and blocks:
-        return f"{arch}, {blocks}-block"
-    return arch
+    if get_model_family(arch) != "anima" or not blocks:
+        return arch
+    generation = anima_generation(blocks)
+    if generation:
+        arch = arch.replace("Anima", f"Anima {generation}", 1)
+    return f"{arch}, {blocks}-block"
+
+
+# What each sampling marker means, in the one sentence that tells someone why
+# they should care. The text is ours, not the file's, so it is safe to embed --
+# but it still goes through `_esc` at the call site, because the day someone
+# makes this table data-driven is the day that stops being true.
+_PREDICTION_BADGES = {
+    "v_prediction": (
+        "v-prediction",
+        "Predicts velocity rather than noise. Sampled on an epsilon schedule "
+        "it produces garbage, so the sampler has to be told.",
+    ),
+    "ztsnr": (
+        "ZTSNR",
+        "Trained with Zero Terminal SNR: the last step starts from pure noise, "
+        "which is what lets it render true black and true white.",
+    ),
+}
+
+
+def _prediction_badges_html(info: dict[str, Any], *, font_size: str = "12px") -> str:
+    """Badges for the sampling markers a checkpoint declares.
+
+    `v_pred` and `ztsnr` are zero-length marker tensors A1111 and Forge write
+    at the root of the file. They say nothing about the architecture and
+    everything about how the model has to be run -- and nothing on screen said
+    so before this.
+    """
+    markers = info.get("prediction") or {}
+    badges = []
+    for marker, (label, explanation) in _PREDICTION_BADGES.items():
+        if not markers.get(marker):
+            continue
+        badges.append(
+            f'<span title="{_esc(explanation)}" style="background: rgba(139, 92, 246, 0.18);'
+            f' color: #c4b5fd; border: 1px solid rgba(139, 92, 246, 0.45);'
+            f' padding: 1px 7px; border-radius: 4px; font-weight: 600;'
+            f' font-size: {font_size}; cursor: help;">{_esc(label)}</span>'
+        )
+    return "&nbsp;".join(badges)
 
 
 def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any] | None = None) -> str:
@@ -746,13 +832,17 @@ def format_badges_html(info: dict[str, Any], compatible_with_info: dict[str, Any
     if turbo_data.get("has_turbo"):
         turbo_badge = f' &nbsp;<span style="background: rgba(245, 158, 11, 0.2); color: #f59e0b; border: 1px solid rgba(245, 158, 11, 0.4); padding: 1px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">{turbo_data.get("kind", "Turbo")}</span>'
 
+    prediction_badges = _prediction_badges_html(info, font_size="11px")
+    if prediction_badges:
+        prediction_badges = " &nbsp;" + prediction_badges
+
     prec = info.get("precision", "Unknown")
     size = info.get("size_str", "")
 
     html = (
         f"<div style='margin-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.5;'>"
         f"[{comp_str}] &nbsp;•&nbsp; "
-        f"<b>{_architecture_label(info)}</b>{turbo_badge} &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
+        f"<b>{_architecture_label(info)}</b>{turbo_badge}{prediction_badges} &nbsp;•&nbsp; <code>{prec}</code> &nbsp;•&nbsp; {size}"
         f"</div>"
     )
 
