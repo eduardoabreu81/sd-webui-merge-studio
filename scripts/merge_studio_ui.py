@@ -36,6 +36,13 @@ from checkpoint_inspector import (
 from quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
 
+#: Whether the LoRA extraction tab is offered.
+#:
+#: The feature is finished and runs, but the cost is out of proportion to
+#: what it returns -- see the handoff's section on it for the measurements.
+#: Hidden rather than removed so that turning it back on is one line.
+SHOW_EXTRACT_TAB = False
+
 NONE_LABEL = "(none)"
 ORIGINAL_VAE_LABEL = "Original / Merge from Models"
 NO_VAE_LABEL = "None (Strip VAE)"
@@ -1744,7 +1751,16 @@ def create_merge_studio_tab():
                     show_progress=False,
                 )
 
-            with gr.Tab("Extract LoRA"):
+            # Off by default, Eduardo's call on 2026-09-19: the cost is real
+            # and the fidelity at a tolerable cost is not. Nine minutes on a
+            # GPU for the *smallest* Anima at rank 64, which still leaves 41%
+            # of the delta behind; a faithful extraction wants rank 512 and
+            # several times the wait, and SDXL and Flux are multiples again.
+            #
+            # The module, its tests and this panel all stay -- it works, and
+            # two bugs found by finally running it are fixed. Flip
+            # SHOW_EXTRACT_TAB to bring it back.
+            with gr.Tab("Extract LoRA", visible=SHOW_EXTRACT_TAB):
                 gr.Markdown(
                     "Turn the difference between two checkpoints into a LoRA. Pick the model a tune **started from** "
                     "and the tuned result; what comes out is an adapter that reproduces the change, at a fraction of "
@@ -1800,8 +1816,14 @@ def create_merge_studio_tab():
                         info="The decomposition is many SVDs; on CPU expect minutes to tens of minutes.",
                     )
                     extract_min_diff = gr.Number(
-                        label="Difference floor", value=1e-4,
-                        info="Modules that moved less than this are left out instead of contributing noise.",
+                        label="Difference floor (share of the weight)",
+                        value=lora_extract.DEFAULT_MIN_DIFF,
+                        info=(
+                            "A module that moved less than this fraction of its own "
+                            "magnitude is left out instead of contributing noise. "
+                            "Relative rather than absolute, because architectures do "
+                            "not share a magnitude scale: 0.01 is 1% of the weight."
+                        ),
                     )
 
                 extract_filename = gr.Textbox(

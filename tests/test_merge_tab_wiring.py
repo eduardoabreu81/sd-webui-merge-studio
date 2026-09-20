@@ -140,5 +140,30 @@ class PerBlockEditorIsAnimaOnlyTests(unittest.TestCase):
         self.assertIn("inputs=[merge_primary, merge_interp]", binding)
 
 
+class ExtractTabIsOffByDefaultTests(unittest.TestCase):
+    """Hidden, not removed.
+
+    Nine minutes on a GPU for the smallest Anima at rank 64, which still
+    leaves 41% of the delta behind. The module and its tests stay, because it
+    works and because turning it back on should be one line rather than a
+    revert.
+    """
+
+    def test_the_tab_is_gated_on_a_named_switch(self):
+        source = ui_source()
+        self.assertIn('gr.Tab("Extract LoRA", visible=SHOW_EXTRACT_TAB)', source)
+
+    def test_the_switch_is_off(self):
+        source = ui_source()
+        self.assertIn("SHOW_EXTRACT_TAB = False", source)
+
+    def test_the_module_is_still_there(self):
+        # Hiding the tab must not quietly take the code with it.
+        import lora_extract
+
+        self.assertTrue(hasattr(lora_extract, "plan_extraction"))
+        self.assertTrue(hasattr(lora_extract, "extract_lora"))
+
+
 if __name__ == "__main__":
     unittest.main()

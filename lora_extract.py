@@ -58,6 +58,23 @@ _OUT_OF_SCOPE_PREFIXES = (
 )
 
 
+def _strip_diffusion_prefix(key: str) -> str:
+    """A key without whichever diffusion namespace it happens to use."""
+    for prefix in _DIFFUSION_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return key
+
+
+def _by_stripped_name(entries) -> dict[str, str]:
+    """`{name under the prefix: the key as written}`.
+
+    Shorter than `entries` when a file carries the same tensor under two
+    prefixes, which the caller treats as a refusal rather than picking one.
+    """
+    return {_strip_diffusion_prefix(key): key for key in entries}
+
+
 def lora_key_base(key: str) -> str | None:
     """The name Forge's loader will look for, or None if out of scope.
 
@@ -201,6 +218,11 @@ class ModulePlan:
     shape: tuple[int, ...]
     rank: int
     elements: int
+    #: The tuned file's name for the same tensor. Empty when the two agree,
+    #: which they do not when one side writes `net.` and the other
+    #: `model.diffusion_model.` -- the Anima base releases against their own
+    #: republished finetunes.
+    key_tuned: str = ""
 
 
 @dataclass
@@ -380,12 +402,31 @@ def plan_extraction(
     plan.prefix_original = _dominant_prefix(original_entries)
     plan.prefix_tuned = _dominant_prefix(tuned_entries)
 
-    shared_keys = original_entries.keys() & tuned_entries.keys()
-    plan.shared = len(shared_keys)
+    # Matched on the name under the diffusion prefix, not on the literal key.
+    # `anima_baseV10` writes `net.blocks.0...` and `anima_turboV11` writes
+    # `model.diffusion_model.blocks.0...` for the same 685 tensors; a literal
+    # intersection of those is empty, and the extraction refused two files
+    # that are structurally identical.
+    original_by_base = _by_stripped_name(original_entries)
+    tuned_by_base = _by_stripped_name(tuned_entries)
+    for label, mapping, source in (
+        ("Original", original_by_base, original_entries),
+        ("Tuned", tuned_by_base, tuned_entries),
+    ):
+        if len(mapping) < len(source):
+            plan.refusals.append(
+                f"{label} carries the same tensor under more than one diffusion "
+                "prefix, so there is no single name to match on."
+            )
+
+    shared_bases = original_by_base.keys() & tuned_by_base.keys()
+    plan.shared = len(shared_bases)
     plan.only_original = plan.total_original - plan.shared
     plan.only_tuned = plan.total_tuned - plan.shared
 
-    for key in sorted(shared_keys):
+    for base_name in sorted(shared_bases):
+        key = original_by_base[base_name]
+        key_tuned = tuned_by_base[base_name]
         if lora_key_base(key) is None:
             # A VAE tensor, a text encoder outside the diffusion namespace, or
             # a key with no weight/bias suffix. Counted so the preview can say
@@ -394,7 +435,7 @@ def plan_extraction(
             continue
 
         shape_a = tuple(original_entries[key].get("shape", ()))
-        shape_b = tuple(tuned_entries[key].get("shape", ()))
+        shape_b = tuple(tuned_entries[key_tuned].get("shape", ()))
         if shape_a != shape_b:
             # A tensor that changed shape is not a tuned version of the same
             # weight, whatever its name says. Counted so the preview can show
@@ -407,13 +448,19 @@ def plan_extraction(
             continue
         if kind == KIND_VECTOR:
             plan.modules.append(
-                ModulePlan(key=key, kind=kind, shape=shape_a, rank=0, elements=_numel(shape_a))
+                ModulePlan(
+                    key=key, kind=kind, shape=shape_a, rank=0,
+                    elements=_numel(shape_a), key_tuned=key_tuned,
+                )
             )
             continue
 
         r = effective_rank(shape_a, rank=plan.rank, conv_rank=plan.conv_rank)
         plan.modules.append(
-            ModulePlan(key=key, kind=kind, shape=shape_a, rank=r, elements=factor_elements(shape_a, r))
+            ModulePlan(
+                key=key, kind=kind, shape=shape_a, rank=r,
+                elements=factor_elements(shape_a, r), key_tuned=key_tuned,
+            )
         )
 
     if plan.decomposable_count == 0 and not plan.refusals:
@@ -469,11 +516,23 @@ def extraction_metadata(
     return {k: str(v) for k, v in metadata.items()}
 
 
+#: Default difference floor, as a share of the weight's own magnitude.
+#:
+#: Chosen from a measurement rather than picked. Across all 685 modules of
+#: `anima_turboV11 - anima_baseV10`: 177 are bit-identical, 60 more move by
+#: around 1e-10 of their own magnitude -- BF16 round-trip noise -- and the
+#: remaining 448 move by a median of 0.6%, the largest by 2.6%. Between
+#: 3e-10 and 6e-3 there is nothing at all, so anything inside that gap
+#: separates "untouched" from "tuned" cleanly. 1e-5 sits four orders above
+#: the noise and three below the signal.
+DEFAULT_MIN_DIFF = 1e-5
+
+
 def extract_lora(
     plan: ExtractionPlan,
     output_path: str,
     *,
-    min_diff: float = 1e-4,
+    min_diff: float = DEFAULT_MIN_DIFF,
     clamp_quantile: float | None = 0.99,
     device: str = "auto",
     progress_cb=None,
@@ -511,15 +570,28 @@ def extract_lora(
                 if base is None:
                     continue
 
+                original = f_orig.get_tensor(module.key).to(torch.float32)
                 delta = (
-                    f_tuned.get_tensor(module.key).to(torch.float32)
-                    - f_orig.get_tensor(module.key).to(torch.float32)
+                    f_tuned.get_tensor(module.key_tuned or module.key).to(torch.float32)
+                    - original
                 )
 
                 # A module the tuning barely moved contributes noise, not
                 # signal. Decomposing it anyway is how an extraction ends up
                 # larger and worse than one that left it alone.
-                if float(delta.abs().mean()) < min_diff:
+                #
+                # Relative to the weight, not absolute. An absolute floor is a
+                # statement about a magnitude scale, and architectures do not
+                # share one: measured on `anima_turboV11 - anima_baseV10`, the
+                # largest mean absolute delta in the whole model is 1.4e-4, so
+                # the old default of 1e-4 discarded 622 of 685 modules and
+                # 3e-4 would have discarded every one of them. As a share of
+                # the weight the same deltas are a median 0.3%, which is a
+                # number that means the same thing on any model.
+                reference = float(original.abs().mean())
+                del original
+                moved = float(delta.abs().mean())
+                if moved <= 0.0 or (reference > 0.0 and moved < min_diff * reference):
                     skipped += 1
                     del delta
                     if progress_cb:
