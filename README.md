@@ -280,12 +280,6 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 
 The README is intentionally focused on installation and everyday use. Architecture notes, model-specific behavior, merge methodology, quantization details, and advanced troubleshooting belong in the **[GitHub Wiki](https://github.com/eduardoabreu81/sd-webui-merge-studio/wiki)**.
 
-The validation and research material already available in the repository can be found in **[Research Notes](docs/RESEARCH.md)**.
-
-The AIO component work was built and tested without a running Forge. What that leaves
-unproven, and how to prove it, is written down in
-**[Runtime Verification](docs/RUNTIME-VERIFICATION.md)**.
-
 ---
 
 ## 🙏 Credits

@@ -7,6 +7,12 @@ recipes/
 # Internal audit notes -- not user documentation
 docs/AIO-COMPONENTS-AUDIT.md
 
+# Measurements and the runtime test plan. Both were written for whoever is
+# building this, not for whoever installs it: one records what was measured
+# and when it may have gone stale, the other lists what is still unproven.
+docs/RESEARCH.md
+docs/RUNTIME-VERIFICATION.md
+
 # Planning notes: working documents, not documentation of the extension.
 # They record decisions and reasoning while a feature is being designed, which
 # is useful here and misleading to anyone reading the repository as a user.
