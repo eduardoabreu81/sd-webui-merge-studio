@@ -23,6 +23,7 @@ import merge_modes  # noqa: E402
 import checkpoint_quantize  # noqa: E402
 import lora_bake  # noqa: E402
 import lora_extract  # noqa: E402
+import lora_merge  # noqa: E402
 import quant_repair  # noqa: E402
 import component_recipes
 import component_ui
@@ -1284,6 +1285,135 @@ def extract_run_handler(
     )
 
 
+# --- LoRA + LoRA -> LoRA ---------------------------------------------------
+
+#: Slots on the LoRA Merge tab. Six because concatenation makes the
+#: accumulated rank the sum of the inputs, and six rank-64 adapters already
+#: compress from rank 384 -- past that the compression is doing more work than
+#: the merge is.
+MAX_MERGE_SOURCES = 6
+
+
+def _picked_loras(names, weights):
+    """(paths, weights) for the slots that actually name a LoRA."""
+    library = {}
+    try:
+        library = lora_bake.available_loras()
+    except Exception:
+        library = {}
+    paths, picked = [], []
+    for name, weight in zip(names, weights):
+        if not name or name == NONE_LABEL:
+            continue
+        path = library.get(name)
+        if path:
+            paths.append(path)
+            picked.append(float(weight if weight is not None else 1.0))
+    return paths, picked
+
+
+def _lora_merge_plan(names, weights, target_rank, dtype):
+    paths, picked = _picked_loras(names, weights)
+    if len(paths) < 2:
+        return None
+    return lora_merge.plan_merge(
+        paths, picked, target_rank=int(target_rank or 0), output_dtype=dtype
+    )
+
+
+def _suggested_merge_name(names, target_rank) -> str:
+    """A filename that says what went in without opening the file."""
+    def stem(name: str) -> str:
+        base = os.path.splitext(os.path.basename(name or ""))[0]
+        return "".join(c for c in base if c.isalnum() or c in "-_") or "lora"
+
+    parts = [stem(n) for n in names if n and n != NONE_LABEL]
+    if not parts:
+        return ""
+    rank = f"-r{int(target_rank)}" if int(target_rank or 0) > 0 else "-exact"
+    return "+".join(parts[:3]) + rank + ".safetensors"
+
+
+def lora_merge_preview_handler(*args):
+    """The panel and a suggested name, from headers alone.
+
+    Same contract as the extraction preview: everything a run would do is on
+    screen before anything is read, because the answer to "should I compress
+    this" is a number the user can only see here.
+    """
+    names = list(args[:MAX_MERGE_SOURCES])
+    weights = list(args[MAX_MERGE_SOURCES:MAX_MERGE_SOURCES * 2])
+    target_rank, dtype = args[MAX_MERGE_SOURCES * 2], args[MAX_MERGE_SOURCES * 2 + 1]
+    try:
+        plan = _lora_merge_plan(names, weights, target_rank, dtype)
+    except Exception as e:
+        return _err_html(e), gr.update()
+    if plan is None:
+        return (
+            "<div style='margin-top:8px;font-size:13px;color:#9ca3af;'>"
+            "Pick at least two LoRAs.</div>",
+            gr.update(),
+        )
+    return (
+        lora_merge.format_merge_preview_html(plan),
+        gr.update(placeholder=_suggested_merge_name(names, target_rank)),
+    )
+
+
+def lora_merge_run_handler(id_task, *args):
+    names = list(args[:MAX_MERGE_SOURCES])
+    weights = list(args[MAX_MERGE_SOURCES:MAX_MERGE_SOURCES * 2])
+    target_rank = args[MAX_MERGE_SOURCES * 2]
+    dtype = args[MAX_MERGE_SOURCES * 2 + 1]
+    device = args[MAX_MERGE_SOURCES * 2 + 2]
+    filename = args[MAX_MERGE_SOURCES * 2 + 3]
+    try:
+        plan = _lora_merge_plan(names, weights, target_rank, dtype)
+        if plan is None:
+            raise ValueError("Pick at least two LoRAs to merge.")
+        if not plan.ok:
+            # Already in the preview; repeated because the button can be
+            # pressed without reading it.
+            return lora_merge.format_merge_preview_html(plan)
+
+        name = (filename or "").strip() or _suggested_merge_name(names, target_rank)
+        name = os.path.basename(name)
+        if not name.endswith(".safetensors"):
+            name += ".safetensors"
+        output_path = os.path.join(_lora_output_dir(), name)
+        if os.path.exists(output_path):
+            raise ValueError(f"{name} already exists; pick another name.")
+
+        def progress_cb(done, total, key):
+            if not total:
+                return
+            pct = 100 * done / total
+            shared.state.textinfo = f"Merging into {name}: {pct:.0f}%"
+            shared.state.sampling_steps = 100
+            shared.state.sampling_step = int(pct)
+
+        result = lora_merge.merge_loras(
+            plan, output_path, device=device, progress_cb=progress_cb
+        )
+    except Exception as e:
+        return _err_html(e)
+
+    compressed = (
+        f" &nbsp;&bull;&nbsp; {result['compressed_modules']} modules compressed"
+        if result["compressed_modules"]
+        else " &nbsp;&bull;&nbsp; exact, nothing compressed"
+    )
+    return (
+        "<div style='margin-top: 6px; padding: 8px 10px; border-radius: 4px; "
+        "background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; font-size: 12px;'>"
+        f"<b style='color: #6ee7b7;'>Saved {html.escape(name)}</b> &nbsp;&bull;&nbsp; "
+        f"{result['modules']} modules &nbsp;&bull;&nbsp; "
+        f"{lora_merge._human_bytes(result['file_size'])}{compressed}"
+        "<div style='color: #9ca3af; margin-top: 4px;'>Press the refresh button on any LoRA list to see it.</div>"
+        "</div>"
+    )
+
+
 def create_merge_studio_tab():
     with gr.Blocks(analytics_enabled=False) as merge_studio_interface:
         gr.Markdown("## Merge Studio")
@@ -1914,6 +2044,122 @@ def create_merge_studio_tab():
                         extract_filename,
                     ],
                     outputs=[extract_result],
+                    show_progress=False,
+                )
+
+            # Its own tab rather than a mode on the merge tab: the inputs
+            # are LoRA files with a weight each rather than three checkpoint
+            # slots, the output is an adapter rather than a checkpoint (so
+            # save mode, the component grid, the VAE bake and quantisation all
+            # mean nothing here), and it refuses by algorithm -- a message no
+            # checkpoint merge ever shows.
+            with gr.Tab("LoRA Merge"):
+                gr.Markdown(
+                    "Combine two or more LoRAs into one. Adding the tensors of two adapters does **not** add their "
+                    "effects — the delta is `up @ down`, and the sum of two products is not the product of two sums. "
+                    "This stacks the factors instead, which is exact, and then optionally compresses the result back down."
+                )
+                gr.Markdown(
+                    "Only plain **LoRA / LoCon** files can be combined this way. LoHa, LoKr, OFT, GLoRA and DoRA "
+                    "store their change in a form that does not stack, and are refused by name rather than merged wrongly."
+                )
+
+                lora_merge_rows = []
+                lora_merge_layouts = []
+                for i in range(1, MAX_MERGE_SOURCES + 1):
+                    with gr.Row(visible=(i <= 2)) as merge_source_row:
+                        source_dd = gr.Dropdown(
+                            label=f"LoRA {i}", choices=_lora_choices(), value=NONE_LABEL, scale=3
+                        )
+                        source_weight = gr.Slider(
+                            label="Weight",
+                            minimum=-2.0,
+                            maximum=2.0,
+                            value=1.0,
+                            step=0.05,
+                            scale=2,
+                            info="Negative subtracts the adapter instead of adding it.",
+                        )
+                        create_refresh_button(
+                            [source_dd],
+                            lora_bake.reload_loras,
+                            lambda: {"choices": _lora_choices()},
+                            f"merge_studio_refresh_lora_merge_{i}",
+                        )
+                    lora_merge_rows.append((source_dd, source_weight))
+                    lora_merge_layouts.append(merge_source_row)
+
+                add_source_btn = gr.Button("Add LoRA", variant="secondary")
+
+                def add_merge_source(count):
+                    new_count = min(int(count) + 1, MAX_MERGE_SOURCES)
+                    return [new_count] + [
+                        gr.update(visible=(i < new_count)) for i in range(MAX_MERGE_SOURCES)
+                    ]
+
+                merge_source_count = gr.State(value=2)
+                add_source_btn.click(
+                    fn=add_merge_source,
+                    inputs=[merge_source_count],
+                    outputs=[merge_source_count] + lora_merge_layouts,
+                    queue=False,
+                )
+
+                lora_merge_preview = gr.HTML("")
+
+                with gr.Row():
+                    lora_merge_rank = gr.Slider(
+                        label="Target rank",
+                        minimum=0,
+                        maximum=256,
+                        step=4,
+                        value=0,
+                        info=(
+                            "0 keeps the result exact: the ranks are simply stacked, so two "
+                            "rank-64 adapters give a rank-128 file that reproduces both "
+                            "perfectly. Any other value compresses back down to it, which "
+                            "costs accuracy and disk in the other direction."
+                        ),
+                    )
+                    lora_merge_dtype = gr.Dropdown(
+                        label="Output precision", choices=EXTRACT_DTYPE_CHOICES, value="BF16"
+                    )
+                    lora_merge_device = gr.Radio(
+                        label="Compute on",
+                        choices=[("Auto", "auto"), ("GPU", "cuda"), ("CPU", "cpu")],
+                        value="auto",
+                        info="Only the compression step is heavy, and it works on the stacked rank rather than the layer.",
+                    )
+
+                lora_merge_filename = gr.Textbox(
+                    label="Save as", placeholder="picked automatically from the LoRA names"
+                )
+                lora_merge_btn = gr.Button("Merge LoRAs", variant="primary")
+                lora_merge_result = gr.HTML("")
+
+                _merge_source_inputs = (
+                    [dd for dd, _ in lora_merge_rows]
+                    + [w for _, w in lora_merge_rows]
+                    + [lora_merge_rank, lora_merge_dtype]
+                )
+                for _control in _merge_source_inputs:
+                    _control.change(
+                        fn=lora_merge_preview_handler,
+                        inputs=_merge_source_inputs,
+                        outputs=[lora_merge_preview, lora_merge_filename],
+                        show_progress=False,
+                        queue=False,
+                    )
+
+                lora_merge_btn.click(
+                    fn=lambda: "", outputs=[lora_merge_result], queue=False, show_progress=False
+                ).then(
+                    fn=call_queue.wrap_gradio_gpu_call(
+                        lora_merge_run_handler, extra_outputs=lambda: [gr.skip()]
+                    ),
+                    inputs=[dummy_component] + _merge_source_inputs
+                    + [lora_merge_device, lora_merge_filename],
+                    outputs=[lora_merge_result],
                     show_progress=False,
                 )
 

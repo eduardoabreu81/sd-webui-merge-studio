@@ -60,6 +60,22 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 - Keep the original VAE, remove it, or bake a custom VAE.
 - Preserve available LoRA trigger declarations in the saved model recipe.
 
+### 🔗 LoRA Merge
+
+Combine up to six LoRAs into a single adapter, on its own tab.
+
+- Give each LoRA its own weight; a negative weight subtracts it.
+- **Exact by default.** Adding the tensors of two adapters does not add their
+  effects, so the factors are stacked instead — the result reproduces every
+  input exactly, at a rank that is the sum of the input ranks.
+- Set a target rank to compress that back down when the file matters more than
+  the last decimal.
+- Plain **LoRA / LoCon** only. LoHa, LoKr, OFT, GLoRA and DoRA store their
+  change in a form that does not stack; they are refused by name, with the
+  reason, rather than merged into something that loads and is wrong.
+- LoRAs targeting different Anima generations are refused: their block indices
+  do not line up, and the cross-generation remap is a checkpoint feature.
+
 ### 🧱 AIO Checkpoints
 
 Modern models keep their text encoder and VAE in separate files. An **AIO** is a
@@ -240,6 +256,7 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 | :--- | :--- |
 | Convert, quantize, or bake a single model | Any compatible model Forge Neo can load |
 | Merge checkpoints | Models with compatible architectures and tensor shapes |
+| Merge LoRAs into one LoRA | Plain LoRA / LoCon adapters of the same architecture |
 | Cross-generation Anima merge | Supported when the newer/larger model is Model A |
 | Inspect safetensors metadata | Checkpoints, LoRAs, text encoders, and VAEs |
 | Build an AIO checkpoint | Any architecture Forge Neo declares components for; verified by reopening |

@@ -191,6 +191,74 @@ class AnimaExtendRatioIsCrossGenerationOnlyTests(unittest.TestCase):
         self.assertIn("anima_extend_ratio_visibility", chain)
 
 
+class LoraMergeTabTests(unittest.TestCase):
+    """The LoRA Merge tab is wired positionally too, and worse: its handlers
+    unpack one flat list by index rather than by name.
+
+    `lora_merge_preview_handler(*args)` slices names, weights, rank and dtype
+    out of `args` by position. Add a control to the list without moving the
+    slice and a weight arrives where a rank was expected -- silently, because
+    every one of them is a number.
+    """
+
+    def test_the_tab_is_offered(self):
+        # Unlike Extract LoRA, which ships hidden behind a switch.
+        self.assertIn('with gr.Tab("LoRA Merge"):', ui_source())
+
+    def test_it_is_not_gated_on_a_switch(self):
+        source = ui_source()
+        tab = source[source.index('with gr.Tab("LoRA Merge"'):]
+        self.assertNotIn("visible=", tab[: tab.index(":")])
+
+    def shared_inputs(self) -> str:
+        source = ui_source()
+        block = source[source.index("_merge_source_inputs = ("):]
+        return block[: block.index('\n                )')]
+
+    def test_the_shared_list_is_dropdowns_then_weights_then_the_two_settings(self):
+        # The order the handlers slice by. Weights before dropdowns would put
+        # a weight where a LoRA name belongs.
+        shared = self.shared_inputs()
+        self.assertLess(
+            shared.index("[dd for dd, _ in lora_merge_rows]"),
+            shared.index("[w for _, w in lora_merge_rows]"),
+        )
+        self.assertLess(
+            shared.index("[w for _, w in lora_merge_rows]"),
+            shared.index("lora_merge_rank, lora_merge_dtype"),
+        )
+
+    def test_both_handlers_slice_by_the_same_constant(self):
+        # One of them using a literal 6 is how these drift apart.
+        source = ui_source()
+        for handler in ("def lora_merge_preview_handler", "def lora_merge_run_handler"):
+            body = source[source.index(handler):]
+            body = body[: body.index("\n\n\ndef ")]
+            self.assertIn("MAX_MERGE_SOURCES", body)
+
+    def test_the_run_handler_gets_device_and_filename_after_the_shared_list(self):
+        # The handler reads them at 2*MAX+2 and 2*MAX+3, in that order.
+        source = ui_source()
+        click = source[source.index("lora_merge_btn.click("):]
+        # The first call only clears the panel; the run is in the .then().
+        click = click[click.index(".then("):]
+        click = click[: click.index("outputs=[lora_merge_result]")]
+        self.assertIn("[dummy_component] + _merge_source_inputs", click)
+        self.assertIn("[lora_merge_device, lora_merge_filename]", click)
+
+    def test_the_slot_rows_and_the_handlers_agree_on_the_maximum(self):
+        self.assertIn("for i in range(1, MAX_MERGE_SOURCES + 1):", ui_source())
+
+    def test_the_module_stays_importable_outside_forge(self):
+        # lora_bake imports torch at module scope, which is why it cannot be
+        # imported here. lora_merge must not follow it, or its tests stop
+        # running in this environment.
+        import lora_merge
+
+        self.assertTrue(hasattr(lora_merge, "plan_merge"))
+        self.assertTrue(hasattr(lora_merge, "merge_loras"))
+
+
 class ExtractTabIsOffByDefaultTests(unittest.TestCase):
     """Hidden, not removed.
 
