@@ -267,6 +267,7 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 
 - Models used in the same merge must be compatible. Merge Studio blocks known mismatches, but it cannot safely guess every new or uncommon architecture.
 - For cross-generation Anima merges, place the newer model with more blocks in **Model A**.
+- **DARE** drops part of the difference at random, so it is the one mode whose result depends on a seed. The seed is saved in the merge recipe and shown again when the finished checkpoint is inspected: the same seed, models and ratios reproduce the same file. A DARE merge made by another tool that records no seed cannot be reproduced exactly, and the inspector says so.
 - Some models store the text encoder and VAE separately. Make sure the required files are selected under Forge Neo's **Additional Modules**, even when saving only the diffusion model.
 - A checkpoint that appears to contain a text encoder or VAE does not always load with it: if the components sit under a namespace the architecture does not read, Forge ignores them. The inspector says when that is the case.
 - If Forge reports a LoRA mismatch in the console, the checkpoint can still be saved, but that LoRA may have been skipped.

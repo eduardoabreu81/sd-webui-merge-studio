@@ -922,6 +922,27 @@ def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, 
             )
         return _line("<b>Ratios:</b> " + " &nbsp; ".join(parts) + note)
 
+    def _seed() -> str:
+        """The one number that lets a random merge be run again.
+
+        DARE draws its mask per tensor, so without the seed the recipe
+        describes a file nobody can reproduce -- including whoever made it.
+        Said out loud when it is missing, rather than left as an absent line
+        that reads like the merge was deterministic.
+        """
+        raw = recipe.get("seed")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return _line(
+                "<b>Seed:</b> <span style='color:#f59e0b;'>not recorded</span> "
+                "<span style='color:#9ca3af;'>&mdash; the random subset cannot be "
+                "drawn again, so this merge cannot be reproduced exactly.</span>"
+            )
+        return _line(
+            f"<b>Seed:</b> <code style='color:#f97316;'>{_esc(raw)}</code> "
+            "<span style='color:#9ca3af;'>&mdash; the same seed, models and ratios "
+            "redraw the same subset.</span>"
+        )
+
     # Checked before Add Difference: "similarity add difference" contains
     # "add_difference", so the substring test below would claim it first.
     if "similarity_add_difference" in key:
@@ -968,7 +989,7 @@ def _describe_merge_math(raw_method: str, recipe: dict[str, Any]) -> tuple[str, 
             "<span style='color:#9ca3af;'>&mdash; drops a share of the difference at random and "
             "rescales what is left, so the result keeps the magnitude with fewer of the "
             "changes.</span>"
-        ) + _ratios("α", "β")
+        ) + _ratios("α", "β") + _seed()
 
     if "save_components" in key:
         # Which components, from the field the ratio would otherwise occupy.
