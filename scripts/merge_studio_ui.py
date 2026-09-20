@@ -731,6 +731,38 @@ def block_weights_visibility(primary_name: str, interp_label: str = ""):
     return gr.update(visible=blends)
 
 
+def anima_extend_ratio_visibility(
+    primary_name: str, secondary_name: str, interp_label: str = ""
+):
+    """The inserted-block blend is shown only when a remap will really happen.
+
+    `extend_ratio` weights the blocks the newer Anima generation *inserted*,
+    and those exist only when A and B are Anima checkpoints of different
+    generations -- the same condition `checkpoint_merge._build_anima_translator`
+    tests before it builds a translator at all. Two models of the same
+    generation merge name-for-name, a non-Anima pair has no block list, and a
+    mode that never reads Model B has no second model to remap. In each of
+    those the slider governs nothing.
+
+    Absent rather than greyed out, for the reason in `block_weights_visibility`:
+    a control that cannot act is worse than no control.
+    """
+    try:
+        blends = merge_modes.merge_mode(
+            INTERP_LABEL_TO_KEY.get(interp_label, interp_label)
+        ).needs_b
+    except Exception:
+        blends = True
+    if not blends:
+        return gr.update(visible=False)
+    blocks_a = _anima_block_count(primary_name)
+    blocks_b = _anima_block_count(secondary_name)
+    cross_generation = (
+        blocks_a is not None and blocks_b is not None and blocks_a != blocks_b
+    )
+    return gr.update(visible=cross_generation)
+
+
 def block_weights_preview(primary_name: str, text: str, multiplier: float):
     """The per-layer strip under the editor, redrawn as the rules are typed.
 
@@ -1353,11 +1385,17 @@ def create_merge_studio_tab():
                     merge_modes.merge_mode_panel(merge_modes.INTERP_WEIGHTED_SUM)
                 )
 
+                # Absent until Model A and Model B are Anima checkpoints of
+                # two different generations -- see
+                # `anima_extend_ratio_visibility`. There are no inserted
+                # blocks in any other pairing, so there is nothing for this
+                # to weight.
                 anima_extend_ratio = gr.Slider(
                     minimum=0.0,
                     maximum=1.0,
                     value=0.0,
                     step=0.05,
+                    visible=False,
                     label="Anima cross-generation: inserted-block blend (extend_ratio)",
                     info=(
                         "Only applies when merging two different Anima generations (28 / 40 / 52 blocks). "
@@ -1606,6 +1644,18 @@ def create_merge_studio_tab():
                         queue=False,
                     )
 
+                # Cross-generation is a property of the pair, so B moves it
+                # as much as A does, and the mode decides whether B is read
+                # at all.
+                for _control in (merge_primary, merge_secondary, merge_interp):
+                    _control.change(
+                        fn=anima_extend_ratio_visibility,
+                        inputs=[merge_primary, merge_secondary, merge_interp],
+                        outputs=[anima_extend_ratio],
+                        show_progress=False,
+                        queue=False,
+                    )
+
                 # The profile redraws on anything that changes what the rules
                 # resolve to: the text, the base, or which model they apply to.
                 for _control in (merge_block_weights, merge_multiplier, merge_primary):
@@ -1682,6 +1732,16 @@ def create_merge_studio_tab():
                     fn=primary_badge_handler,
                     inputs=[merge_primary, merge_secondary, merge_tertiary],
                     outputs=[primary_badge, secondary_badge, tertiary_badge],
+                    show_progress=False,
+                    queue=False,
+                ).then(
+                    # A loaded recipe sets the models from the backend, and the
+                    # slider has to follow the pair it just landed on. Chained
+                    # rather than added to the load handler's outputs, because
+                    # `anima_extend_ratio` is already in `recipe_scalars` there.
+                    fn=anima_extend_ratio_visibility,
+                    inputs=[merge_primary, merge_secondary, merge_interp],
+                    outputs=[anima_extend_ratio],
                     show_progress=False,
                     queue=False,
                 )

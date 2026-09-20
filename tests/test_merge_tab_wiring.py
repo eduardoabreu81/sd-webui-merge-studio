@@ -140,6 +140,57 @@ class PerBlockEditorIsAnimaOnlyTests(unittest.TestCase):
         self.assertIn("inputs=[merge_primary, merge_interp]", binding)
 
 
+class AnimaExtendRatioIsCrossGenerationOnlyTests(unittest.TestCase):
+    """The inserted-block blend applies to one pairing and no other.
+
+    It weights blocks the newer Anima generation inserted. Two models of the
+    same generation have none, and a non-Anima pair has no block list at all,
+    so on screen with anything else selected it is a control that reads like
+    it does something.
+    """
+
+    def test_the_slider_starts_hidden(self):
+        source = ui_source()
+        slider = source[source.index("anima_extend_ratio = gr.Slider("):]
+        self.assertIn("visible=False", slider[:400])
+
+    def visibility_handler(self) -> str:
+        source = ui_source()
+        handler = source[source.index("def anima_extend_ratio_visibility("):]
+        return handler[: handler.index("\n\n\ndef ")]
+
+    def test_both_models_are_consulted(self):
+        # Cross-generation is a property of the pair. A alone cannot answer it.
+        handler = self.visibility_handler()
+        self.assertIn("_anima_block_count(primary_name)", handler)
+        self.assertIn("_anima_block_count(secondary_name)", handler)
+
+    def test_the_generations_have_to_differ(self):
+        # Same block count means plain name matching: no inserted blocks, and
+        # nothing for the slider to weight.
+        self.assertIn("blocks_a != blocks_b", self.visibility_handler())
+
+    def test_a_mode_that_never_reads_model_b_hides_it(self):
+        self.assertIn("needs_b", self.visibility_handler())
+
+    def test_all_three_controls_drive_it(self):
+        source = ui_source()
+        binding = source[
+            source.index("for _control in (merge_primary, merge_secondary, merge_interp):"):
+        ]
+        binding = binding[: binding.index("\n\n")]
+        self.assertIn("anima_extend_ratio_visibility", binding)
+        self.assertIn("outputs=[anima_extend_ratio]", binding)
+
+    def test_loading_a_recipe_re_decides_it(self):
+        # The models arrive from the backend there, so nothing the user
+        # touched fires and the slider would keep the previous pair's answer.
+        source = ui_source()
+        chain = source[source.index("recipe_load_btn.click("):]
+        chain = chain[: chain.index("merge_btn = gr.Button")]
+        self.assertIn("anima_extend_ratio_visibility", chain)
+
+
 class ExtractTabIsOffByDefaultTests(unittest.TestCase):
     """Hidden, not removed.
 
