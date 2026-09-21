@@ -161,6 +161,81 @@ def split_frozen_inserted(mapping: list[int]) -> tuple[dict[int, int], dict[int,
     return frozen, inserted
 
 
+# How an inserted block is written when a cross-generation merge reaches it.
+#
+# BLEND is what this module has always done: treat the block the insert was
+# deep-copied from as its counterpart and lerp towards it.
+#
+# DELTA is the write rule the ComfyUI "Anima Delta Mix" node pack uses
+# (bestluner-create/Anima-Delta-Mix): never average two checkpoints inside one
+# insert, and instead add the direction the donor has moved away from the
+# floor it shares an origin with --
+#
+#     insert += r * (donor[src] - kept[src])
+#
+# where `kept` is Model A's OWN frozen block carrying that same source index,
+# as it stands after the merge (see `kept_target_for_insert`). At r=1 with an
+# unmerged stem this lands the insert exactly where the donor's block sits
+# relative to its neighbour, rather than halfway between two models.
+EXTEND_RULE_BLEND = "blend"
+EXTEND_RULE_DELTA = "delta"
+EXTEND_RULES = (EXTEND_RULE_BLEND, EXTEND_RULE_DELTA)
+
+
+def kept_target_for_insert(
+    frozen: dict[int, int], inserted: dict[int, int]
+) -> dict[int, int]:
+    """Maps an inserted block's target index to the target index of the FROZEN
+    block that carries the same source -- the "kept floor" the Delta Mix write
+    rule measures the donor against.
+
+    Every inserted block is a later occurrence of a source that some frozen
+    block already claimed (that is what `split_frozen_inserted` means by
+    inserted), so each one has exactly one kept counterpart."""
+    source_to_kept = {source: target for target, source in frozen.items()}
+    return {
+        target: source_to_kept[source]
+        for target, source in inserted.items()
+        if source in source_to_kept
+    }
+
+
+def kept_precedes_insert(kept_for_insert: dict[int, int]) -> bool:
+    """True when every kept floor sits BEFORE the insert that reads it.
+
+    `_merge_module_tree` walks `named_modules()`, which visits a ModuleList in
+    index order, and it writes each block in place. So a delta read of block
+    `kept` from inside block `target` sees the merged stem exactly when
+    kept < target -- which is what the Delta Mix node gets by lerping the whole
+    stem in a separate pass first. It holds for all three Anima mappings; this
+    is the assertion that says so out loud rather than the merge silently
+    mixing pre- and post-merge floors if a future generation breaks it."""
+    return all(kept < target for target, kept in kept_for_insert.items())
+
+
+def make_kept_translator(frozen: dict[int, int], inserted: dict[int, int]):
+    """Returns f(name_in_A) -> the name of the A-SIDE block the Delta Mix rule
+    subtracts (the kept floor sharing this insert's source), or None for
+    anything that isn't an inserted block.
+
+    Unlike `make_name_translator` and `make_extend_translator`, both sides of
+    this lookup are Model A: the rule compares the donor against the chassis's
+    own inherited floor, not against a second file."""
+    kept_for_insert = kept_target_for_insert(frozen, inserted)
+
+    def kept(name: str) -> str | None:
+        target = main_block_index(name)
+        if target is None:
+            return None
+        source = kept_for_insert.get(target)
+        if source is None:
+            return None
+        m = _BLOCK_RE.match(name)
+        return f"blocks.{source}" + name[m.end(2) :]
+
+    return kept
+
+
 def block_count(diffusion_model) -> int | None:
     """Number of main transformer blocks, or None if this isn't a block-list
     architecture."""

@@ -55,6 +55,7 @@ from merge_modes import (
     INTERP_NO_INTERPOLATION,
     MergeError,
     blend_tensors,
+    delta_write,
     make_seeded_rand,
     merge_mode,
 )
@@ -169,6 +170,11 @@ def _build_metadata(
                 "merged_blocks": anima_remap["frozen_blocks"],
                 "inserted_blocks": anima_remap["inserted_blocks"],
                 "extend_ratio": anima_remap.get("extend_ratio", 0.0),
+                **(
+                    {"extend_rule": anima_remap["extend_rule"]}
+                    if anima_remap.get("extend_rule")
+                    else {}
+                ),
             }
         if loras:
             # A trigger explicitly declared in the LoRA's safetensors header
@@ -360,9 +366,21 @@ def _build_anima_translator(engine_a, engine_b, engine_c, diffusion_a, diffusion
         raise MergeError(str(e)) from e
 
     frozen, inserted = anima_remap.split_frozen_inserted(mapping)
+    # The delta write rule reads Model A's own kept floor from inside the
+    # insert, and `_merge_module_tree` merges in block order -- so the floor
+    # has to come first or the read straddles a merged and an unmerged block.
+    # True for every published Anima mapping; checked rather than assumed.
+    kept_for_insert = anima_remap.kept_target_for_insert(frozen, inserted)
+    if not anima_remap.kept_precedes_insert(kept_for_insert):
+        raise MergeError(
+            f"Anima {blocks_b}-block -> {blocks_a}-block mapping puts an inserted block before the "
+            f"floor it was copied from. The delta write rule cannot read a floor that has not been "
+            f"merged yet; use the blend rule for this pairing."
+        )
     return {
         "translate": anima_remap.make_name_translator(frozen),
         "extend": anima_remap.make_extend_translator(inserted),
+        "kept": anima_remap.make_kept_translator(frozen, inserted),
         "from_blocks": blocks_b,
         "to_blocks": blocks_a,
         "frozen_blocks": len(frozen),
@@ -372,6 +390,16 @@ def _build_anima_translator(engine_a, engine_b, engine_c, diffusion_a, diffusion
             f"({len(frozen)} shared blocks merged, {len(inserted)} inserted blocks kept from Model A)"
         ),
     }
+
+
+def _delta_write(w_a, w_b, w_kept, ratio: float, dev):
+    """`merge_modes.delta_write` with this module's device handling around it.
+
+    The arithmetic lives in merge_modes so a machine without torch can check
+    it; moving the tensor is this side's job, as everywhere else here."""
+    if w_kept is not None and getattr(w_kept, "device", dev) != dev:
+        w_kept = w_kept.to(device=dev)
+    return delta_write(w_a, w_b, w_kept, ratio)
 
 
 def _merge_module_tree(
@@ -385,6 +413,8 @@ def _merge_module_tree(
     translate_name=None,
     extend_name=None,
     extend_ratio: float = 0.0,
+    kept_name=None,
+    extend_rule: str = anima_remap.EXTEND_RULE_BLEND,
     beta: float = 0.0,
     weight_spec=None,
     block_index=None,
@@ -400,6 +430,19 @@ def _merge_module_tree(
     extend_name gives the B-side module the inserted block was originally
     copied from at initialization. With extend_ratio > 0 that module is
     blended in at that weight instead of the block being left untouched.
+
+    kept_name / extend_rule: which write rule those inserted blocks get.
+    `blend` lerps A's insert towards the B-side module extend_name found, the
+    behaviour this has always had. `delta` instead writes
+
+        insert += extend_ratio * (B[extend_name] - A[kept_name])
+
+    -- the donor's own displacement from the floor it shares an origin with,
+    never an average of two checkpoints inside one block. `kept_name` gives
+    the A-side floor; see `anima_remap.make_kept_translator`. The delta rule
+    is defined against a single donor, so it ignores Model C even in the
+    three-model modes: the stem still merges on the mode's own terms, and only
+    the inserts take the delta.
 
     beta: the second ratio, for the modes that have one. Ignored by the rest.
 
@@ -444,9 +487,18 @@ def _merge_module_tree(
         # An inserted block has no counterpart; extend_ratio optionally blends
         # in the block it was copied from instead of leaving it at A's weights.
         effective_multiplier = multiplier
+        delta_kept = None
         if lookup is None and extend_name is not None and extend_ratio > 0.0:
             lookup = extend_name(name)
             effective_multiplier = extend_ratio
+            if extend_rule == anima_remap.EXTEND_RULE_DELTA:
+                kept = kept_name(name) if kept_name is not None else None
+                delta_kept = named_a.get(kept) if kept is not None else None
+                if delta_kept is None:
+                    # No floor to measure against means no defined delta. The
+                    # block keeps A's weights, the same as extend_ratio 0.
+                    skipped.append(name)
+                    continue
         elif per_block is not None:
             # `elif`, not `if`: an inserted block's extend_ratio wins over a
             # per-block rule. The rule was written for a layer that exists in
@@ -480,7 +532,7 @@ def _merge_module_tree(
             w_b = w_b.to(device=dev)
 
         w_c = None
-        if mode.needs_c:
+        if mode.needs_c and delta_kept is None:
             m_c = named_c.get(lookup)
             w_c = weight_as_float(m_c) if m_c is not None else None
             if w_c is None or w_c.shape != w_a.shape:
@@ -489,10 +541,17 @@ def _merge_module_tree(
             if w_c.device != dev:
                 w_c = w_c.to(device=dev)
 
-        merged = blend_tensors(
-            interp_method, effective_multiplier, beta, w_a, w_b, w_c,
-            xp=torch, rand=rand,
-        )
+        if delta_kept is not None:
+            merged = _delta_write(w_a, w_b, weight_as_float(delta_kept), effective_multiplier, dev)
+            if merged is None:
+                skipped.append(name)
+                del w_a, w_b
+                continue
+        else:
+            merged = blend_tensors(
+                interp_method, effective_multiplier, beta, w_a, w_b, w_c,
+                xp=torch, rand=rand,
+            )
         del w_c
 
         set_module_weight(m_a, merged, target_format=None)
@@ -511,7 +570,7 @@ def _merge_module_tree(
                     b_b_f = b_b_f.to(device=dev)
 
                 b_c_f = None
-                if mode.needs_c:
+                if mode.needs_c and delta_kept is None:
                     m_c = named_c.get(lookup)
                     b_c = getattr(m_c, "bias", None) if m_c is not None else None
                     if b_c is not None and b_c.shape == b_a.shape:
@@ -521,10 +580,18 @@ def _merge_module_tree(
                 # A module whose weight merged but whose bias has no
                 # counterpart in C leaves the bias alone rather than blending
                 # it on different terms from the weight beside it.
-                new_bias = blend_tensors(
-                    interp_method, effective_multiplier, beta, b_a, b_b_f, b_c_f,
-                    xp=torch, rand=rand,
-                )
+                if delta_kept is not None:
+                    kept_bias = getattr(delta_kept, "bias", None)
+                    new_bias = _delta_write(
+                        b_a, b_b_f,
+                        kept_bias.data.float() if kept_bias is not None else None,
+                        effective_multiplier, dev,
+                    )
+                else:
+                    new_bias = blend_tensors(
+                        interp_method, effective_multiplier, beta, b_a, b_b_f, b_c_f,
+                        xp=torch, rand=rand,
+                    )
                 del b_c_f
                 if new_bias is not None:
                     m_a.bias = nn.Parameter(new_bias.to(dtype=m_a.bias.dtype, device=dev), requires_grad=False)
@@ -597,6 +664,7 @@ def merge_checkpoints(
     device_choice: str = "auto",
     bake_vae: str | None = "original",
     anima_extend_ratio: float = 0.0,
+    anima_extend_rule: str = anima_remap.EXTEND_RULE_BLEND,
     component_selections: list[dict] | None = None,
     progress_cb=None,
     beta: float = 0.0,
@@ -725,10 +793,25 @@ def merge_checkpoints(
         )
         unet_translate = anima_remap_note.pop("translate", None) if anima_remap_note else None
         unet_extend = anima_remap_note.pop("extend", None) if anima_remap_note else None
+        unet_kept = anima_remap_note.pop("kept", None) if anima_remap_note else None
+        if anima_extend_rule not in anima_remap.EXTEND_RULES:
+            raise MergeError(
+                f"Unknown inserted-block write rule {anima_extend_rule!r} "
+                f"(expected one of {', '.join(anima_remap.EXTEND_RULES)})."
+            )
         if anima_remap_note:
             anima_remap_note["extend_ratio"] = anima_extend_ratio
+            # Recorded only when it governed something: at ratio 0 no inserted
+            # block is written at all, so naming a rule there would put a
+            # decision in the recipe that never ran.
+            anima_remap_note["extend_rule"] = (
+                anima_extend_rule if anima_extend_ratio > 0.0 else ""
+            )
             if anima_extend_ratio > 0.0:
-                anima_remap_note["message"] += f", inserted blocks blended at extend_ratio={anima_extend_ratio}"
+                anima_remap_note["message"] += (
+                    f", inserted blocks written with the {anima_extend_rule} rule "
+                    f"at extend_ratio={anima_extend_ratio}"
+                )
             if progress_cb:
                 progress_cb(anima_remap_note["message"])
 
@@ -757,6 +840,8 @@ def merge_checkpoints(
             translate_name=unet_translate,
             extend_name=unet_extend,
             extend_ratio=anima_extend_ratio,
+            kept_name=unet_kept,
+            extend_rule=anima_extend_rule,
             rand=merge_rand,
             weight_spec=unet_weight_spec,
             block_index=anima_remap.main_block_index if unet_weight_spec else None,

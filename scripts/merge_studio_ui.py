@@ -16,6 +16,7 @@ _EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _EXT_ROOT not in sys.path:
     sys.path.insert(0, _EXT_ROOT)
 
+import anima_remap  # noqa: E402
 import aux_inspector  # noqa: E402
 import checkpoint_merge  # noqa: E402
 import elemental_weights  # noqa: E402
@@ -310,6 +311,14 @@ SAVE_MODE_CHOICES = [
 ]
 SAVE_MODE_LABEL_TO_KEY = dict(SAVE_MODE_CHOICES)
 
+# Blend first: it is what every existing recipe was merged with, and a recipe
+# saved before the rule existed loads with the radio at its default.
+ANIMA_EXTEND_RULE_CHOICES = [
+    ("Blend — lerp towards the block it was copied from", anima_remap.EXTEND_RULE_BLEND),
+    ("Delta — insert + ratio x (donor - kept floor)", anima_remap.EXTEND_RULE_DELTA),
+]
+ANIMA_EXTEND_RULE_BY_LABEL = dict(ANIMA_EXTEND_RULE_CHOICES)
+
 
 def _format_size(path: str) -> str:
     if not os.path.exists(path):
@@ -473,6 +482,7 @@ RECIPE_FIELDS = (
     "save_mode", "device", "output_name", "discard",
     "format", "clip_format", "vae_format",
     "save_metadata", "config_source", "add_merge_recipe", "bake_vae",
+    "anima_extend_rule",
 )
 
 
@@ -747,6 +757,10 @@ def anima_extend_ratio_visibility(
 
     Absent rather than greyed out, for the reason in `block_weights_visibility`:
     a control that cannot act is worse than no control.
+
+    Returns one update per control: the ratio slider and the write-rule radio
+    beside it, which answer two halves of the same question (how much of the
+    donor reaches an inserted block, and in what form) and so appear together.
     """
     try:
         blends = merge_modes.merge_mode(
@@ -755,13 +769,13 @@ def anima_extend_ratio_visibility(
     except Exception:
         blends = True
     if not blends:
-        return gr.update(visible=False)
+        return gr.update(visible=False), gr.update(visible=False)
     blocks_a = _anima_block_count(primary_name)
     blocks_b = _anima_block_count(secondary_name)
     cross_generation = (
         blocks_a is not None and blocks_b is not None and blocks_a != blocks_b
     )
-    return gr.update(visible=cross_generation)
+    return gr.update(visible=cross_generation), gr.update(visible=cross_generation)
 
 
 def block_weights_preview(primary_name: str, text: str, multiplier: float):
@@ -900,6 +914,7 @@ def merge_handler(
     seed: int = 0,
     block_weights: str = "",
     anima_extend_ratio: float = 0.0,
+    anima_extend_rule_label: str = ANIMA_EXTEND_RULE_CHOICES[0][0],
     save_mode_label: str = SAVE_MODE_CHOICES[0][0],
     device_label: str = DEVICE_CHOICES[0][0],
     output_filename: str = "",
@@ -993,6 +1008,9 @@ def merge_handler(
             device_choice=device_choice,
             bake_vae=bake_vae,
             anima_extend_ratio=float(anima_extend_ratio or 0.0),
+            anima_extend_rule=ANIMA_EXTEND_RULE_BY_LABEL.get(
+                anima_extend_rule_label, anima_remap.EXTEND_RULE_BLEND
+            ),
             component_selections=component_selections,
             progress_cb=progress_cb,
             beta=float(beta or 0.0),
@@ -1063,7 +1081,8 @@ def merge_handler(
             f"<b>Anima remap:</b> {remap['from_blocks']}-block &rarr; {remap['to_blocks']}-block "
             f"({remap['frozen_blocks']} shared blocks merged, {remap['inserted_blocks']} inserted blocks "
             + (
-                f"blended at extend_ratio {remap['extend_ratio']})<br>"
+                f"written with the {remap.get('extend_rule', 'blend')} rule at "
+                f"extend_ratio {remap['extend_ratio']})<br>"
                 if remap.get("extend_ratio")
                 else "kept from A)<br>"
             )
@@ -1537,6 +1556,25 @@ def create_merge_studio_tab():
                     ),
                 )
 
+                # Shown and hidden with the slider above, which is the control
+                # that decides whether an inserted block is written at all --
+                # at extend_ratio 0 there is nothing for a write rule to
+                # govern, so the two travel together.
+                anima_extend_rule = gr.Radio(
+                    choices=[label for label, _ in ANIMA_EXTEND_RULE_CHOICES],
+                    value=ANIMA_EXTEND_RULE_CHOICES[0][0],
+                    visible=False,
+                    label="Anima cross-generation: inserted-block write rule",
+                    info=(
+                        "How the blend above is applied. Blend lerps the inserted block towards the older model's "
+                        "block it was copied from — both are real layers, but they sit at different depths, so the "
+                        "result is an average of two checkpoints inside one block. Delta writes "
+                        "insert + ratio × (donor − kept) instead: only the direction Model B moved away from the "
+                        "block Model A inherited alongside this one, never B's absolute weights. Delta is the rule "
+                        "the ComfyUI Anima Delta Mix node pack uses; Blend is what this extension has always done."
+                    ),
+                )
+
                 # Anima only, and absent rather than disabled for everything
                 # else -- see `block_weights_visibility`. Collapsed, because
                 # the merge tab already has three accordions and a uniform
@@ -1781,7 +1819,7 @@ def create_merge_studio_tab():
                     _control.change(
                         fn=anima_extend_ratio_visibility,
                         inputs=[merge_primary, merge_secondary, merge_interp],
-                        outputs=[anima_extend_ratio],
+                        outputs=[anima_extend_ratio, anima_extend_rule],
                         show_progress=False,
                         queue=False,
                     )
@@ -1835,6 +1873,7 @@ def create_merge_studio_tab():
                     merge_save_mode, merge_device, merge_output_name, merge_discard,
                     merge_format, merge_clip_format, merge_vae_format,
                     merge_save_metadata, merge_config_source, merge_add_recipe, merge_bake_vae,
+                    anima_extend_rule,
                 ]
                 recipe_dds = [dd for dd, _ in merge_lora_rows]
                 recipe_sts = [st for _, st in merge_lora_rows]
@@ -1871,7 +1910,7 @@ def create_merge_studio_tab():
                     # `anima_extend_ratio` is already in `recipe_scalars` there.
                     fn=anima_extend_ratio_visibility,
                     inputs=[merge_primary, merge_secondary, merge_interp],
-                    outputs=[anima_extend_ratio],
+                    outputs=[anima_extend_ratio, anima_extend_rule],
                     show_progress=False,
                     queue=False,
                 )
@@ -1894,6 +1933,7 @@ def create_merge_studio_tab():
                         merge_seed,
                         merge_block_weights,
                         anima_extend_ratio,
+                        anima_extend_rule,
                         merge_save_mode,
                         merge_device,
                         merge_output_name,

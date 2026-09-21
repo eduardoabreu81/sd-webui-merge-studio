@@ -215,6 +215,31 @@ def _keep_mask(tensor, drop_rate: float, xp, rand=None):
     return cast(tensor.dtype) if cast is not None else mask.astype(tensor.dtype)
 
 
+def delta_write(w_a, w_b, w_kept, ratio: float):
+    """The Delta Mix write rule for one tensor: `insert += r * (donor - kept)`.
+
+    Not a merge mode, and deliberately not in MERGE_MODES: a mode answers how
+    two models blend across the whole checkpoint, while this answers what may
+    be written into a block that exists in only one of them. It is reached
+    solely through the cross-generation Anima path in `_merge_module_tree`.
+
+    What it is NOT is `lerp(insert, donor, r)`. The donor block lives at a
+    different depth in a smaller model, so averaging the two puts a foreign
+    layer's absolute weights into the niche. Subtracting `kept` -- the floor
+    of Model A that shares this insert's origin -- leaves only the direction
+    the donor moved during its own finetune, which is a quantity the two
+    models do agree on.
+
+    `None` back means there is no floor of the matching shape to subtract, and
+    the caller leaves the block at A's weights. A missing floor is not a zero
+    floor: dropping the subtraction would write the donor's absolute weights,
+    the exact failure the rule exists to prevent.
+    """
+    if w_kept is None or getattr(w_kept, "shape", None) != getattr(w_a, "shape", None):
+        return None
+    return w_a + ratio * (w_b - w_kept)
+
+
 def blend_tensors(
     interp_method: str,
     alpha: float,

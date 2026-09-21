@@ -105,7 +105,9 @@ class MergeHandlerInputsTests(unittest.TestCase):
         # runs with the default and the recipe records the default too.
         call = self.source[self.source.index("checkpoint_merge.merge_checkpoints("):]
         call = call[: call.index("\n        )")]
-        for argument in ("beta=", "block_weights=", "anima_extend_ratio="):
+        for argument in (
+            "beta=", "block_weights=", "anima_extend_ratio=", "anima_extend_rule=",
+        ):
             self.assertIn(argument, call)
 
 
@@ -180,7 +182,30 @@ class AnimaExtendRatioIsCrossGenerationOnlyTests(unittest.TestCase):
         ]
         binding = binding[: binding.index("\n\n")]
         self.assertIn("anima_extend_ratio_visibility", binding)
-        self.assertIn("outputs=[anima_extend_ratio]", binding)
+        # Both halves of the inserted-block decision, or the radio outlives a
+        # pair that has no inserted blocks for it to govern.
+        self.assertIn("outputs=[anima_extend_ratio, anima_extend_rule]", binding)
+
+    def test_the_write_rule_starts_hidden_too(self):
+        # It travels with the slider: at extend_ratio 0 no inserted block is
+        # written, so a rule for writing them governs nothing.
+        source = ui_source()
+        radio = source[source.index("anima_extend_rule = gr.Radio("):]
+        self.assertIn("visible=False", radio[:400])
+
+    def test_the_write_rule_defaults_to_the_old_behaviour(self):
+        # Every recipe saved before the rule existed merged with the lerp and
+        # carries no rule of its own, so it loads with the radio at whatever
+        # sits first in the choices. Reordering them re-interprets those
+        # recipes without touching a single saved file.
+        source = ui_source()
+        choices = source[source.index("ANIMA_EXTEND_RULE_CHOICES = ["):]
+        choices = choices[: choices.index("]")]
+        self.assertLess(
+            choices.index("EXTEND_RULE_BLEND"), choices.index("EXTEND_RULE_DELTA")
+        )
+        radio = source[source.index("anima_extend_rule = gr.Radio("):]
+        self.assertIn("value=ANIMA_EXTEND_RULE_CHOICES[0][0]", radio[:400])
 
     def test_loading_a_recipe_re_decides_it(self):
         # The models arrive from the backend there, so nothing the user

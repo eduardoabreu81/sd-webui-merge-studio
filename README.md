@@ -320,7 +320,8 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 ## ⚠️ Important Notes
 
 - Models used in the same merge must be compatible. Merge Studio blocks known mismatches, but it cannot safely guess every new or uncommon architecture.
-- For cross-generation Anima merges, place the newer model with more blocks in **Model A**. The **inserted-block blend** slider appears only when Model A and Model B are Anima checkpoints of two different generations, because that is the only case where inserted blocks exist.
+- For cross-generation Anima merges, place the newer model with more blocks in **Model A**. The **inserted-block blend** slider and the **write rule** beside it appear only when Model A and Model B are Anima checkpoints of two different generations, because that is the only case where inserted blocks exist.
+- The newer generation's extra blocks have no partner in the older model, so there are two ways to write them and you pick one. **Blend** mixes each extra block with the older block it grew out of — simple, but the two sit at different depths, so you get an average of two models inside one block. **Delta** adds only the distance Model B travelled away from its own neighbour, and never Model B's raw weights. Delta usually keeps Model A's character better; Blend is the original behaviour and stays the default. At a blend of 0 neither runs and the extra blocks are left exactly as Model A had them.
 - **DARE** drops part of the difference at random, so it is the one mode whose result depends on a seed. The seed is saved in the merge recipe and shown again when the finished checkpoint is inspected: the same seed, models and ratios reproduce the same file. A DARE merge made by another tool that records no seed cannot be reproduced exactly, and the inspector says so.
 - Some models store the text encoder and VAE separately. Make sure the required files are selected under Forge Neo's **Additional Modules**, even when saving only the diffusion model.
 - A checkpoint that appears to contain a text encoder or VAE does not always load with it: if the components sit under a namespace the architecture does not read, Forge ignores them. The inspector says when that is the case.
@@ -341,6 +342,7 @@ The README is intentionally focused on installation and everyday use. Architectu
 - Built for **[Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)** by Haoming02.
 - Anima cross-generation mapping follows Forge Neo's own mapping tables.
 - Additional Anima mapping research was informed by **[ComfyUI-Anima-Remap](https://github.com/shin131002/ComfyUI-Anima-Remap)** by shin131002.
+- The **Delta** write rule for inserted blocks follows **[Anima Delta Mix](https://github.com/bestluner-create/Anima-Delta-Mix)** by bestluner-create, whose block maps were verified to agree with Forge Neo's.
 - **Similarity Add Difference** is ported from **[meh](https://github.com/s1dlx/meh)** by s1dlx (MIT, Copyright © 2023 s1dlx).
 - **DARE** is written from *[Language Models are Super Mario](https://arxiv.org/abs/2311.03099)* (Yu et al., arXiv:2311.03099); **[safetensors-merge-supermario](https://github.com/martyn/safetensors-merge-supermario)** (MIT) was the reference implementation consulted.
 - Weighted Sum, Add Difference and Sum Twice are written from the formulas **[SuperMerger](https://github.com/hako-mikan/sd-webui-supermerger)** publishes in its README. No code was taken from it.
