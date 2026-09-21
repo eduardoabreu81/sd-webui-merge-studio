@@ -45,13 +45,42 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 
 ### 🔀 Checkpoint Merge & Conversion
 
-- Merge two compatible checkpoints with **Weighted Sum**.
-- Transfer a model difference with **Add Difference**.
-- Use **No Interpolation** to convert, re-quantize, or process a single model.
+Six ways to combine models. Each one asks only for the models and sliders it
+actually needs, so the form changes with your choice instead of showing fields
+that do nothing.
+
+| Mode | What it does | Models |
+| :--- | :--- | :--- |
+| **No Interpolation** | Passes one model straight through — for converting, re-quantizing, or rebuilding a single file. | A |
+| **Weighted Sum** | Blends two models. The multiplier decides how much of each. | A + B |
+| **Add Difference** | Takes what B learned on top of C and adds it to A. C has to be the model B was trained from. | A + B + C |
+| **Sum Twice** | Blends A with B, then blends that result with C. Three models in one pass. | A + B + C |
+| **Similarity Add Difference** | Add Difference that holds back where A and B already agree, and applies the full difference only where they disagree. | A + B + C |
+| **DARE** | Keeps a random share of the difference and strengthens what survives — a lighter touch that still moves the model. | A + B |
+
 - Choose precision separately for the diffusion model, text encoder, and VAE.
 - Build a self-contained **AIO** checkpoint by choosing its text encoder and VAE explicitly.
 - Merge compatible Anima generations with automatic block mapping.
+- Weight some layers differently from the rest of the merge (Anima).
 - See the detected architecture and embedded components before processing.
+
+#### Weighting some layers differently (Anima)
+
+A merge normally applies the same multiplier to the whole model. For Anima
+checkpoints you can override that for a range of layers — which is how you keep
+one model's composition while taking another's style.
+
+Write one rule per line, naming the layers, the parts of them it applies to, and
+the weight:
+
+```text
+L05-L09:self_attn.q_proj self_attn.k_proj:0.08
+```
+
+Anything no rule names merges at the multiplier, and where two rules overlap the
+later one wins. The editor shows which layers each rule ends up touching, so you
+can check it before merging, and rules can be imported from a checkpoint that
+already carries them.
 
 ### 🧩 LoRA & VAE Baking
 
@@ -168,6 +197,10 @@ will read them.
 - Inspect checkpoints, LoRAs, text encoders, and VAEs.
 - Identify model architecture and embedded components.
 - Read merge lineage, parent hashes, baked LoRAs, and available trigger declarations.
+- Read merges made elsewhere. A checkpoint merged in another tool — or built in
+  ComfyUI — records its own method, proportions and per-layer rules; Merge Studio
+  reads those back, explains the method, and names the tool that wrote them
+  instead of showing an empty recipe.
 - Recognize common LoRA and LyCORIS formats.
 - View raw safetensors metadata when you need more detail.
 
@@ -204,7 +237,9 @@ https://github.com/eduardoabreu81/sd-webui-merge-studio
 
 1. Open **Merge Studio** → **Checkpoint Merge & Studio**.
 2. Select the primary model in **Model A**.
-3. Choose **Weighted Sum** and add Model B, or choose **Add Difference** and add Models B and C.
+3. Pick a merge mode and fill the models it asks for — two for **Weighted Sum**
+   and **DARE**, three for **Add Difference**, **Sum Twice** and **Similarity Add
+   Difference**.
 4. Set the output name, multiplier, precision, and save mode.
 5. Click **Merge / Process**.
 
@@ -256,6 +291,8 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 | :--- | :--- |
 | Convert, quantize, or bake a single model | Any compatible model Forge Neo can load |
 | Merge checkpoints | Models with compatible architectures and tensor shapes |
+| Weight layers individually | Anima checkpoints |
+| Read a merge made in another tool | Recipes written by other mergers, and ComfyUI workflows |
 | Merge LoRAs into one LoRA | Plain LoRA / LoCon adapters of the same architecture |
 | Cross-generation Anima merge | Supported when the newer/larger model is Model A |
 | Inspect safetensors metadata | Checkpoints, LoRAs, text encoders, and VAEs |
