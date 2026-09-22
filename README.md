@@ -1,14 +1,11 @@
 # 🔀 Merge Studio
 
-<div align="center">
-
 [![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue)](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 [![Gradio](https://img.shields.io/badge/Gradio-4.x-orange)](https://gradio.app/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> **Model merging, conversion, LoRA baking, and inspection for [Stable Diffusion WebUI Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)**
-
-</div>
+Model merging, conversion, LoRA baking and inspection for
+[Stable Diffusion WebUI Forge Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo).
 
 Merge Studio brings the most useful model-management tools into a single Forge Neo tab. Merge compatible checkpoints, convert model precision, bake LoRAs and VAEs, inspect model metadata, save reusable recipes, and repair common quantization metadata issues without leaving the WebUI.
 
@@ -165,10 +162,7 @@ details and troubleshooting — lives in the
 
 ---
 
-<div align="center">
-
-Made for the Stable Diffusion and Forge Neo community.
-
-**[Report Bug](https://github.com/eduardoabreu81/sd-webui-merge-studio/issues)** • **[Request Feature](https://github.com/eduardoabreu81/sd-webui-merge-studio/issues)** • **[Wiki](https://github.com/eduardoabreu81/sd-webui-merge-studio/wiki)**
-
-</div>
+Found something it gets wrong, or a model it refuses that it should not?
+[Open an issue](https://github.com/eduardoabreu81/sd-webui-merge-studio/issues)
+— what the Inspector reports for the models involved is usually enough to
+diagnose it.
