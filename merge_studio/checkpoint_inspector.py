@@ -657,12 +657,24 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
     turbo_kind = None
     details = []
 
+    def _applied(strength) -> bool:
+        """Whether a recorded LoRA strength actually changed the weights.
+
+        A recipe carried over and then zeroed leaves the LoRA's name behind at a
+        strength of 0, which adds nothing to the file. Naming it as evidence of
+        acceleration reports a change that was not made.
+        """
+        try:
+            return float(strength) != 0.0
+        except (TypeError, ValueError):
+            return True
+
     # 1. Check baked LoRAs in WebUI merge recipe
     if recipe and isinstance(recipe, dict):
         baked = recipe.get("baked_loras") or recipe.get("loras") or []
         for lora in baked:
             l_name = lora.get("name", "")
-            if "turbo" in l_name.lower():
+            if "turbo" in l_name.lower() and _applied(lora.get("strength", 1.0)):
                 found_turbo = True
                 turbo_kind = "Baked Turbo LoRA"
                 l_str = lora.get("strength", 1.0)
@@ -684,11 +696,11 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
     if comfy_recipe and isinstance(comfy_recipe, dict):
         for lora in comfy_recipe.get("loras", []):
             l_name = lora.get("name", "")
-            if "turbo" in l_name.lower():
+            l_str = lora.get("strength_model", lora.get("strength", 1.0))
+            if "turbo" in l_name.lower() and _applied(l_str):
                 found_turbo = True
                 if not turbo_kind:
                     turbo_kind = "Baked Turbo LoRA"
-                l_str = lora.get("strength_model", lora.get("strength", 1.0))
                 details.append(f"ComfyUI Baked LoRA: <b>{_esc(l_name)}</b> (strength: {_esc(l_str)})")
 
         for bm in comfy_recipe.get("base_models", []):
@@ -699,8 +711,21 @@ def detect_turbo(info: dict[str, Any]) -> dict[str, Any]:
                     turbo_kind = "Merged from Turbo Checkpoint"
                 details.append(f"ComfyUI Base Model: <b>{_esc(b_name)}</b>")
 
-    # 3. Check raw metadata strings
-    if not found_turbo and metadata:
+    # 3. Check raw metadata strings.
+    #
+    # Only when nothing structured was parsed. `workflow` is the graph as it was
+    # drawn, bypassed nodes and all; `prompt` is the graph that actually ran,
+    # which ComfyUI builds with the bypassed ones already removed. Searching the
+    # raw metadata reads both, so a Turbo LoRA the author switched off before
+    # saving still matched -- measured on divingAnima_v70, whose graph carries
+    # `anima-turbo-lora-v0.2` on a node at mode 4 that the executed prompt does
+    # not contain, feeding a ModelSave the merge reaches directly.
+    #
+    # `_parse_comfy_recipe` reads `prompt`, so when it returned something, step
+    # 2 has already asked the executed graph and its answer is the one that
+    # describes the file. This fallback is for checkpoints that carry no recipe
+    # anything can parse.
+    if not found_turbo and metadata and not comfy_recipe:
         meta_str = json.dumps(metadata, ensure_ascii=False).lower()
         if any(w in meta_str for w in ("anima-turbo-v1.1", "anima_turbo_v1.1", "animaturbo_v1.1", "animaturbov1.1", "anima turbo 1.1")):
             found_turbo = True
