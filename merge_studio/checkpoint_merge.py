@@ -324,6 +324,27 @@ def _guard_anima_block_order(primary_insp, other_insp, fam_primary, fam_other, l
     )
 
 
+def _guard_unsupported_submodules(insp, label):
+    """Rejects a checkpoint carrying a sub-module Forge Neo cannot load.
+
+    Anima-3.8B v1.1 bundles a Semantic Connector v2 -- 190 tensors under
+    `anima_v2_connector` -- that Forge has no support for and drops when it
+    opens the file. Everything downstream then works on a model the file does
+    not describe: the merge reads a checkpoint stripped of the part that made
+    it different, and saves a result missing it. Nothing raises on the way, so
+    the output looks fine and is not.
+
+    There is no safe way to carry it through, so this refuses rather than
+    warns. Read from the header, before any engine loads. The reason itself is
+    written in `checkpoint_inspector`, which can be tested outside Forge.
+    """
+    from .checkpoint_inspector import unsupported_submodule_message
+
+    message = unsupported_submodule_message(insp, label)
+    if message:
+        raise MergeError(message)
+
+
 def _build_anima_translator(engine_a, engine_b, engine_c, diffusion_a, diffusion_b, diffusion_c):
     """Anima's generations (28 / 40 / 52 blocks) were each built by inserting
     new blocks between the previous generation's, so a name-for-name merge
@@ -696,10 +717,12 @@ def merge_checkpoints(
         from .checkpoint_inspector import inspect_checkpoint, get_model_family
         p_insp = inspect_checkpoint(primary_info.filename)
         fam_a = get_model_family(p_insp.get("architecture", ""))
+        _guard_unsupported_submodules(p_insp, "Primary Model (A)")
 
         if secondary_info:
             s_insp = inspect_checkpoint(secondary_info.filename)
             fam_b = get_model_family(s_insp.get("architecture", ""))
+            _guard_unsupported_submodules(s_insp, "Secondary Model (B)")
             _guard_anima_block_order(p_insp, s_insp, fam_a, fam_b, "Secondary Model (B)")
             if fam_a != "other" and fam_b != "other" and fam_a != fam_b:
                 arch_a = p_insp.get("architecture", "Unknown")
@@ -709,6 +732,7 @@ def merge_checkpoints(
         if tertiary_info:
             t_insp = inspect_checkpoint(tertiary_info.filename)
             fam_c = get_model_family(t_insp.get("architecture", ""))
+            _guard_unsupported_submodules(t_insp, "Tertiary Model (C)")
             _guard_anima_block_order(p_insp, t_insp, fam_a, fam_c, "Tertiary Model (C)")
             if fam_a != "other" and fam_c != "other" and fam_a != fam_c:
                 arch_a = p_insp.get("architecture", "Unknown")

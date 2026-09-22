@@ -132,7 +132,7 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 ## ⚠️ Before you merge
 
 - **Keep the originals** until you have generated with the result. A merge that loads is not the same as a merge that works.
-- **Anima 3.8B v1.1 is not safe to merge here.** It carries a Semantic Connector that Forge Neo drops on load, so the saved result would be missing it. Use the plain Anima 3.8B instead. Nothing warns about this yet.
+- **Anima 3.8B v1.1 is refused.** It carries a Semantic Connector that Forge Neo drops on load, so the saved result would be missing it. The merge is blocked with a message naming what was found. Use the plain Anima 3.8B instead.
 - **For cross-generation Anima merges, Model A must be the newer model with more blocks**, and Blend and Delta are not interchangeable at the same number — Delta moves roughly sixteen times less. See [Anima Merges](../../wiki/Anima-Merges).
 - **Compatibility checks are not exhaustive.** Merge Studio blocks the mismatches it knows about, but it cannot safely guess every new or uncommon architecture.
 - **Quantizing a VAE** affects image quality more than quantizing the diffusion model. FP16 or BF16 is the safest choice.

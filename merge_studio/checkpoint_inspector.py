@@ -170,6 +170,65 @@ def infer_architecture_id(header: dict[str, Any], filename: str = "") -> str:
     return ARCH_UNKNOWN
 
 
+#: Sub-modules a checkpoint can carry that Forge Neo's loader has no support
+#: for, keyed by the path segment they occupy. Forge drops them when it loads
+#: the file, so what a merge reads is not the model on disk, and what it writes
+#: is missing the part that made the model different.
+#:
+#: Matched as a whole dotted segment rather than a prefix: Anima writes the same
+#: sub-module under `net.` in the base models and under `model.diffusion_model.`
+#: in republished finetunes, and both spellings are load-bearing.
+UNSUPPORTED_SUBMODULES: dict[str, str] = {
+    # Anima-3.8B v1.1's bundled Semantic Connector v2. Measured against the
+    # plain 3.8B: 190 extra tensors, every one of them under this segment, and
+    # not one key the plain model has that v1.1 does not.
+    #
+    # The name was guessed as `semantic_connector` once and was wrong. It is
+    # read from the files, not from the label.
+    "anima_v2_connector": "Semantic Connector v2",
+}
+
+
+def detect_unsupported_submodules(keys) -> list[dict[str, Any]]:
+    """Sub-modules in this file that Forge Neo will silently drop on load.
+
+    Returns one entry per sub-module found, with the segment it occupies, the
+    name to show, and how many tensors belong to it -- the count is what makes
+    the report checkable against the file rather than a claim to be believed.
+    """
+    found: dict[str, int] = {}
+    for key in keys:
+        for segment in key.split("."):
+            if segment in UNSUPPORTED_SUBMODULES:
+                found[segment] = found.get(segment, 0) + 1
+                break
+    return [
+        {"segment": segment, "label": UNSUPPORTED_SUBMODULES[segment], "tensors": count}
+        for segment, count in sorted(found.items())
+    ]
+
+
+def unsupported_submodule_message(info: dict[str, Any], label: str) -> str | None:
+    """Why this checkpoint cannot be merged, or None when it can.
+
+    Returns the reason rather than raising it: `checkpoint_merge` imports torch,
+    Forge's backend and the WebUI's `modules` at module scope, so a rule that
+    lived there could not be tested on this side. The merge turns this into its
+    own `MergeError`; deciding is its job, and describing the file is this one's.
+    """
+    found = info.get("unsupported_submodules") or []
+    if not found:
+        return None
+    names = ", ".join(f"{f['label']} ({f['tensors']} tensors)" for f in found)
+    return (
+        f"{label} carries a component Forge Neo cannot load: {names}. "
+        f"Forge drops it when the file is opened, so the merge would read a model without it "
+        f"and save a result that is missing it -- silently, with nothing to show what was lost. "
+        f"For Anima-3.8B v1.1, use the plain Anima-3.8B instead (the one that pairs with the "
+        f"native Qwen3 0.6B text encoder)."
+    )
+
+
 def embedded_components_from_keys(keys, architecture_id: str = ARCH_UNKNOWN):
     """What this file carries besides its diffusion model, and whether Forge
     will actually read it.
@@ -630,6 +689,10 @@ def inspect_checkpoint(filepath: str) -> dict[str, Any]:
         # What each embedded component actually is, which namespace it occupies,
         # and whether this architecture declares that namespace.
         "embedded_components": embedded_components_from_keys(keys, architecture_id),
+        # Sub-modules Forge Neo's loader has no support for. Present in the
+        # file, absent from anything that loads it, so a merge cannot preserve
+        # them -- which is why this is what blocks the merge.
+        "unsupported_submodules": detect_unsupported_submodules(keys),
         # How the model has to be sampled, when the file says so. Structural,
         # functionally decisive, and shown nowhere before this.
         "prediction": detect_prediction_markers(header),
