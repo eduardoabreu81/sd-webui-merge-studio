@@ -13,6 +13,12 @@ docs/AIO-COMPONENTS-AUDIT.md
 docs/RESEARCH.md
 docs/RUNTIME-VERIFICATION.md
 
+# The Anima Delta Mix investigation: measurements, the probe that took them,
+# and the recipe pulled out of a published checkpoint's metadata. Written for
+# whoever is building this -- it records what was measured, what stayed a
+# guess, and which of my own claims the numbers overturned.
+docs/delta-mix-study/
+
 # Planning notes: working documents, not documentation of the extension.
 # They record decisions and reasoning while a feature is being designed, which
 # is useful here and misleading to anyone reading the repository as a user.
