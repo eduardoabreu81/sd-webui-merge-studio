@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from component_bundle import ResolvedComponent, component_provenance  # noqa: E402
-from source_precision import apply_component_precision  # noqa: E402
+from merge_studio.component_bundle import ResolvedComponent, component_provenance  # noqa: E402
+from merge_studio.source_precision import apply_component_precision  # noqa: E402
 
 
 class FakeDtype:
@@ -334,8 +334,8 @@ class EmbeddedComponentTests(unittest.TestCase):
 
 class ProvenanceTests(unittest.TestCase):
     def setUp(self):
-        from component_bundle import ComponentPlan
-        from component_registry import SupportState
+        from merge_studio.component_bundle import ComponentPlan
+        from merge_studio.component_registry import SupportState
 
         self.plan = ComponentPlan(
             architecture_id="anima",

@@ -254,7 +254,7 @@ def is_anima_engine(engine) -> bool:
     this breaks exactly when Forge breaks, never a release earlier.
     """
     try:
-        from forge_capabilities import capability_profile_from_engine, is_anima_profile
+        from .forge_capabilities import capability_profile_from_engine, is_anima_profile
 
         return is_anima_profile(capability_profile_from_engine(engine))
     except Exception:

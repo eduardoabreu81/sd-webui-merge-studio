@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
-from checkpoint_inspector import read_safetensors_header
+from .checkpoint_inspector import read_safetensors_header
 
 
 # A component is not stored under the same prefix by every release, and the read

@@ -8,7 +8,7 @@ displayed all three as plain "Anima (DiT)".
 
 import unittest
 
-from checkpoint_inspector import _architecture_label
+from merge_studio.checkpoint_inspector import _architecture_label
 
 
 class ArchitectureLabelTests(unittest.TestCase):

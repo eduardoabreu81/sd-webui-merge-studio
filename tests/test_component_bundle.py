@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from component_bundle import (  # noqa: E402
+from merge_studio.component_bundle import (  # noqa: E402
     ComponentPlan,
     ComponentSelection,
     ComponentValidationError,
@@ -23,8 +23,8 @@ from component_bundle import (  # noqa: E402
     preflight_component_plan,
     validate_loaded_components,
 )
-from component_registry import SupportState  # noqa: E402
-from forge_capabilities import capability_profile_from_engine  # noqa: E402
+from merge_studio.component_registry import SupportState  # noqa: E402
+from merge_studio.forge_capabilities import capability_profile_from_engine  # noqa: E402
 
 
 def module_info(signature_id, *, storage="plain", supported=True, precision="BF16", kind=None):

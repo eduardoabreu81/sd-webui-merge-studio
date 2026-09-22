@@ -11,14 +11,14 @@ returns, copied verbatim so these tests fail if the assumption drifts.
 
 import unittest
 
-from component_registry import (
+from merge_studio.component_registry import (
     SupportState,
     StorageKind,
     apply_policy,
     get_slot_policy,
     SLOT_POLICIES,
 )
-from forge_capabilities import capability_profile_from_engine
+from merge_studio.forge_capabilities import capability_profile_from_engine
 
 CLIP_TARGETS = {
     "flux": {"clip_l": "text_encoder", "t5xxl": "text_encoder_2"},

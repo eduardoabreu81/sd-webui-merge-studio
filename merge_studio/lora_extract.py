@@ -17,8 +17,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from aux_inspector import detect_unsupported_storage
-from checkpoint_inspector import (
+from .aux_inspector import detect_unsupported_storage
+from .checkpoint_inspector import (
     ARCH_UNKNOWN,
     _esc,
     infer_architecture_id,

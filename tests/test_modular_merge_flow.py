@@ -17,14 +17,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from component_bundle import (  # noqa: E402
+from merge_studio.component_bundle import (  # noqa: E402
     ComponentPlan,
     ComponentSelection,
     ComponentValidationError,
     MergeComposition,
     plan_merge_composition,
 )
-from component_registry import SupportState  # noqa: E402
+from merge_studio.component_registry import SupportState  # noqa: E402
 
 
 def complete_plan(**kw):

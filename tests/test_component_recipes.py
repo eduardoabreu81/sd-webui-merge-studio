@@ -15,7 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from component_recipes import (  # noqa: E402
+from merge_studio.component_recipes import (  # noqa: E402
     RECIPE_VERSION,
     migrate_v1_components,
     restore_component_recipe,

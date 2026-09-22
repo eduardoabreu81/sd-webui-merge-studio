@@ -1,7 +1,9 @@
-"""Puts the repository root on sys.path.
+"""Puts the extension root on sys.path.
 
-The modules under test sit at the repository root rather than in an installed
-package, so `python -m pytest` from the root cannot import them on its own.
+The modules under test live in the `merge_studio` package beside this suite,
+not in an installed distribution, so `python -m pytest` from the root cannot
+find the package on its own. This is the same insert `scripts/merge_studio_ui`
+does when Forge loads the extension.
 """
 
 import sys

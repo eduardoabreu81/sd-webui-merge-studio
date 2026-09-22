@@ -21,7 +21,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from architecture_guess import guess_architecture, install_torch_stub  # noqa: E402
+from merge_studio.architecture_guess import guess_architecture, install_torch_stub  # noqa: E402
 
 
 def read_header(path: str) -> dict:

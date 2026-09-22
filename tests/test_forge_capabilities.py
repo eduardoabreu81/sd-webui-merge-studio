@@ -7,7 +7,7 @@ future config with the same functional contract must keep working.
 
 import unittest
 
-from forge_capabilities import (
+from merge_studio.forge_capabilities import (
     ForgeCapabilityError,
     capability_profile_from_engine,
     is_anima_profile,

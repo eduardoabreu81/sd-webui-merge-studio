@@ -23,7 +23,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from checkpoint_inspector import inspect_checkpoint
+from merge_studio.checkpoint_inspector import inspect_checkpoint
 
 CONVROT = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 256}
 TENSORWISE = {"format": "int8_tensorwise", "per_row": True}

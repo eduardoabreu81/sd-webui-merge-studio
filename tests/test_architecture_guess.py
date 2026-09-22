@@ -15,14 +15,14 @@ One test does run the real thing, and skips when it is absent.
 import os
 import unittest
 
-import architecture_guess as ag
-from architecture_guess import (
+from merge_studio import architecture_guess as ag
+from merge_studio.architecture_guess import (
     anima_generation,
     detect_prediction_markers,
     guess_architecture,
     state_dict_from_header,
 )
-from checkpoint_inspector import get_model_family
+from merge_studio.checkpoint_inspector import get_model_family
 
 
 def header(*keys, metadata=None):
@@ -269,7 +269,7 @@ class RealDetectorTests(unittest.TestCase):
             self.skipTest(f"huggingface_guess not importable here: {exc}")
 
     def test_a_real_checkpoint_is_named_from_its_header_alone(self):
-        from checkpoint_inspector import read_safetensors_header
+        from merge_studio.checkpoint_inspector import read_safetensors_header
 
         real_header, _ = read_safetensors_header(self.path)
         result = guess_architecture(real_header, fallback="Diffusion Model")

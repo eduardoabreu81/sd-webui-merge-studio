@@ -278,7 +278,7 @@ class LoraMergeTabTests(unittest.TestCase):
         # lora_bake imports torch at module scope, which is why it cannot be
         # imported here. lora_merge must not follow it, or its tests stop
         # running in this environment.
-        import lora_merge
+        from merge_studio import lora_merge
 
         self.assertTrue(hasattr(lora_merge, "plan_merge"))
         self.assertTrue(hasattr(lora_merge, "merge_loras"))
@@ -303,7 +303,7 @@ class ExtractTabIsOffByDefaultTests(unittest.TestCase):
 
     def test_the_module_is_still_there(self):
         # Hiding the tab must not quietly take the code with it.
-        import lora_extract
+        from merge_studio import lora_extract
 
         self.assertTrue(hasattr(lora_extract, "plan_extraction"))
         self.assertTrue(hasattr(lora_extract, "extract_lora"))

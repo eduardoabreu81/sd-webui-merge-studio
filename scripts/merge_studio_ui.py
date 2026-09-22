@@ -16,26 +16,28 @@ _EXT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _EXT_ROOT not in sys.path:
     sys.path.insert(0, _EXT_ROOT)
 
-import anima_remap  # noqa: E402
-import aux_inspector  # noqa: E402
-import checkpoint_merge  # noqa: E402
-import elemental_weights  # noqa: E402
-import merge_modes  # noqa: E402
-import checkpoint_quantize  # noqa: E402
-import lora_bake  # noqa: E402
-import lora_extract  # noqa: E402
-import lora_merge  # noqa: E402
-import quant_repair  # noqa: E402
-import component_recipes
-import component_ui
-from checkpoint_inspector import (
+from merge_studio import (  # noqa: E402
+    anima_remap,
+    aux_inspector,
+    checkpoint_merge,
+    checkpoint_quantize,
+    component_recipes,
+    component_ui,
+    elemental_weights,
+    lora_bake,
+    lora_extract,
+    lora_merge,
+    merge_modes,
+    quant_repair,
+)
+from merge_studio.checkpoint_inspector import (  # noqa: E402
     available_vaes,
     format_badges_html,
     format_recipe_dashboard_html,
     get_model_family,
     inspect_checkpoint,
 )
-from quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
+from merge_studio.quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
 
 #: Whether the LoRA extraction tab is offered.

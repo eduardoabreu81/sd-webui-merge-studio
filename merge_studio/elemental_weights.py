@@ -30,7 +30,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from checkpoint_inspector import _esc
+from .checkpoint_inspector import _esc
 
 #: ``L<start>-L<end>:<module> <module>:<weight>``
 _RULE = re.compile(

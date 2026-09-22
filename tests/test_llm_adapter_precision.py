@@ -14,7 +14,7 @@ which 61 Linears (101.7M params) pass the quantizer's own eligibility filter.
 
 import unittest
 
-from precision_stats import dominant_float_dtype, match_dtype
+from merge_studio.precision_stats import dominant_float_dtype, match_dtype
 
 
 class FakeDtype:

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import numpy as np
 
-import lora_merge
-from lora_merge import (
+from merge_studio import lora_merge
+from merge_studio.lora_merge import (
     compress_factors,
     concat_factors,
     fold_weight,

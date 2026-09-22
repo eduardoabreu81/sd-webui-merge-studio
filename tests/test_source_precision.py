@@ -22,7 +22,7 @@ def write_source_header(path: Path, tensors: dict[str, str]) -> None:
 class SourcePrecisionTests(unittest.TestCase):
     def test_same_restores_bf16_dtype_recorded_in_source_header(self):
         try:
-            from source_precision import match_source_dtypes
+            from merge_studio.source_precision import match_source_dtypes
         except ModuleNotFoundError:
             self.fail("source-aware precision support is missing")
 
@@ -59,7 +59,7 @@ class SourcePrecisionFallbackTests(unittest.TestCase):
     """A source with no readable header must not destroy a finished merge."""
 
     def test_non_safetensors_source_is_reported_not_raised(self):
-        from source_precision import try_match_source_dtypes
+        from merge_studio.source_precision import try_match_source_dtypes
 
         key = "model.diffusion_model.block.weight"
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,7 +76,7 @@ class SourcePrecisionFallbackTests(unittest.TestCase):
             self.assertIn("Keeping the precision", warning)
 
     def test_missing_source_file_is_reported_not_raised(self):
-        from source_precision import try_match_source_dtypes
+        from merge_studio.source_precision import try_match_source_dtypes
 
         changed, warning = try_match_source_dtypes(
             {}, "no-such-model.safetensors", set(), {}
@@ -86,7 +86,7 @@ class SourcePrecisionFallbackTests(unittest.TestCase):
         self.assertIn("no-such-model.safetensors", warning)
 
     def test_readable_source_reports_no_warning(self):
-        from source_precision import try_match_source_dtypes
+        from merge_studio.source_precision import try_match_source_dtypes
 
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / "base.safetensors"
@@ -123,7 +123,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
         return FakeDtype, FakeTensor
 
     def test_net_prefixed_source_matches_saved_diffusion_keys(self):
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
@@ -140,7 +140,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
             self.assertIs(bf16, state_dict["model.diffusion_model.blocks.0.mlp.weight"].dtype)
 
     def test_other_components_do_not_match_a_diffusion_key(self):
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
@@ -162,7 +162,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
         """Mugen accepts both autoencoder prefixes on load but saves "vae.",
         and Chroma renames "first_stage_model." to "vae." on load. Either way
         the source header and the output disagree on the prefix."""
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
@@ -179,7 +179,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
             self.assertIs(bf16, state_dict["vae.decoder.conv_in.weight"].dtype)
 
     def test_a_vae_key_does_not_borrow_from_the_diffusion_model(self):
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
@@ -195,7 +195,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
             self.assertEqual(0, changed)
 
     def test_a_name_two_source_keys_share_is_dropped_not_guessed(self):
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")
@@ -218,7 +218,7 @@ class DiffusionPrefixMatchingTests(unittest.TestCase):
             self.assertEqual(1, changed)
 
     def test_ambiguous_stripped_name_is_not_used_as_a_fallback(self):
-        from source_precision import match_source_dtypes
+        from merge_studio.source_precision import match_source_dtypes
 
         FakeDtype, FakeTensor = self._dtypes()
         fp16, bf16 = FakeDtype("F16"), FakeDtype("BF16")

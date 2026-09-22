@@ -8,7 +8,7 @@ showing no ratio at all for merges that very much had one.
 
 import unittest
 
-from checkpoint_inspector import format_recipe_dashboard_html
+from merge_studio.checkpoint_inspector import format_recipe_dashboard_html
 
 ALPHA = (
     "0,L05-L09:self_attn.q_proj self_attn.k_proj:0.08"
@@ -127,7 +127,7 @@ class SaveComponentsTests(unittest.TestCase):
     """
 
     def describe(self, recipe):
-        from checkpoint_inspector import _describe_merge_math
+        from merge_studio.checkpoint_inspector import _describe_merge_math
 
         return _describe_merge_math("Save Components (model0 only)", recipe)
 
@@ -151,7 +151,7 @@ class SaveComponentsTests(unittest.TestCase):
     def test_a_component_list_is_not_drawn_as_a_weight_profile(self):
         # The ratio field holds a component list, so heading it "per-block
         # weights" says the opposite of what it is.
-        from checkpoint_inspector import _format_recipe_ratios
+        from merge_studio.checkpoint_inspector import _format_recipe_ratios
 
         self.assertEqual("", _format_recipe_ratios({"alpha_raw": "unet"}, 28))
 

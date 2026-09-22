@@ -36,22 +36,22 @@ def unet_blocks(count=2, channels=32, *, dtype="BF16"):
 
 class ClassifyShapeTests(unittest.TestCase):
     def test_two_dimensional_weight_is_decomposable(self):
-        from lora_extract import KIND_LINEAR, classify_shape
+        from merge_studio.lora_extract import KIND_LINEAR, classify_shape
 
         self.assertEqual(classify_shape((128, 64)), KIND_LINEAR)
 
     def test_four_dimensional_weight_is_a_conv_kernel(self):
-        from lora_extract import KIND_CONV, classify_shape
+        from merge_studio.lora_extract import KIND_CONV, classify_shape
 
         self.assertEqual(classify_shape((64, 32, 3, 3)), KIND_CONV)
 
     def test_one_dimensional_weight_cannot_be_decomposed(self):
-        from lora_extract import KIND_VECTOR, classify_shape
+        from merge_studio.lora_extract import KIND_VECTOR, classify_shape
 
         self.assertEqual(classify_shape((128,)), KIND_VECTOR)
 
     def test_scalar_and_three_dimensional_are_skipped(self):
-        from lora_extract import KIND_SKIP, classify_shape
+        from merge_studio.lora_extract import KIND_SKIP, classify_shape
 
         self.assertEqual(classify_shape(()), KIND_SKIP)
         self.assertEqual(classify_shape((4, 8, 16)), KIND_SKIP)
@@ -59,17 +59,17 @@ class ClassifyShapeTests(unittest.TestCase):
 
 class EffectiveRankTests(unittest.TestCase):
     def test_rank_is_capped_by_the_smaller_dimension(self):
-        from lora_extract import effective_rank
+        from merge_studio.lora_extract import effective_rank
 
         self.assertEqual(effective_rank((320, 16), rank=64, conv_rank=32), 16)
 
     def test_rank_passes_through_when_the_matrix_is_large_enough(self):
-        from lora_extract import effective_rank
+        from merge_studio.lora_extract import effective_rank
 
         self.assertEqual(effective_rank((1280, 1280), rank=64, conv_rank=32), 64)
 
     def test_conv_kernels_use_their_own_rank(self):
-        from lora_extract import effective_rank
+        from merge_studio.lora_extract import effective_rank
 
         # A 3x3 kernel flattens to 64 x (64*3*3), so conv_rank is not capped.
         self.assertEqual(effective_rank((64, 64, 3, 3), rank=64, conv_rank=32), 32)
@@ -77,12 +77,12 @@ class EffectiveRankTests(unittest.TestCase):
 
 class FactorElementsTests(unittest.TestCase):
     def test_linear_factors_are_out_by_r_plus_r_by_in(self):
-        from lora_extract import factor_elements
+        from merge_studio.lora_extract import factor_elements
 
         self.assertEqual(factor_elements((128, 64), 8), 128 * 8 + 8 * 64)
 
     def test_conv_factors_account_for_the_flattened_kernel(self):
-        from lora_extract import factor_elements
+        from merge_studio.lora_extract import factor_elements
 
         # down covers in*kh*kw once flattened.
         self.assertEqual(factor_elements((64, 32, 3, 3), 4), 64 * 4 + 4 * 32 * 3 * 3)
@@ -98,7 +98,7 @@ class PlanExtractionTests(unittest.TestCase):
         return write_safetensors_header(self.tmp / name, tensors, metadata)
 
     def test_matching_models_plan_every_decomposable_module(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         tensors = dit_blocks(count=4)
         original = self.write("orig.safetensors", tensors)
@@ -115,7 +115,7 @@ class PlanExtractionTests(unittest.TestCase):
         self.assertGreater(plan.estimated_bytes, 0)
 
     def test_keys_present_in_only_one_model_are_reported_not_extracted(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         base = dit_blocks(count=2)
         extra = dict(base)
@@ -131,7 +131,7 @@ class PlanExtractionTests(unittest.TestCase):
         self.assertEqual(plan.linear_count, 4)
 
     def test_shared_key_with_different_shapes_is_excluded(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         base = dit_blocks(count=1)
         widened = dict(base)
@@ -146,7 +146,7 @@ class PlanExtractionTests(unittest.TestCase):
         self.assertEqual(plan.linear_count, 1)
 
     def test_conv_kernels_are_planned_for_unet_models(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         tensors = unet_blocks(count=2)
         original = self.write("orig.safetensors", tensors)
@@ -158,7 +158,7 @@ class PlanExtractionTests(unittest.TestCase):
         self.assertTrue(plan.ok, plan.refusals)
 
     def test_estimated_size_grows_with_rank(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         tensors = dit_blocks(count=4)
         original = self.write("orig.safetensors", tensors)
@@ -180,7 +180,7 @@ class RefusalTests(unittest.TestCase):
         return write_safetensors_header(self.tmp / name, tensors, metadata)
 
     def test_quantized_input_is_refused(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         plain = dit_blocks(count=2)
         quantized = dict(plain)
@@ -199,7 +199,7 @@ class RefusalTests(unittest.TestCase):
         )
 
     def test_different_architectures_are_refused(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         anima = dit_blocks(count=2)
         anima["net.llm_adapter.blocks.0.self_attn.q_proj.weight"] = ("BF16", (64, 64))
@@ -216,7 +216,7 @@ class RefusalTests(unittest.TestCase):
         )
 
     def test_models_with_nothing_in_common_are_refused(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         original = self.write("a.safetensors", dit_blocks(count=2, prefix="net."))
         tuned = self.write("b.safetensors", {"totally.unrelated.weight": ("BF16", (8, 8))})
@@ -226,7 +226,7 @@ class RefusalTests(unittest.TestCase):
         self.assertFalse(plan.ok)
 
     def test_identical_file_on_both_sides_is_refused(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         path = self.write("same.safetensors", dit_blocks(count=2))
 
@@ -238,7 +238,7 @@ class RefusalTests(unittest.TestCase):
 
 class GroupSummaryTests(unittest.TestCase):
     def test_blocks_collapse_into_one_group_regardless_of_index(self):
-        from lora_extract import ModulePlan, group_summary
+        from merge_studio.lora_extract import ModulePlan, group_summary
 
         modules = [
             ModulePlan(f"net.blocks.{i}.self_attn.q_proj.weight", "linear", (64, 64), 8, 1024)
@@ -251,7 +251,7 @@ class GroupSummaryTests(unittest.TestCase):
         self.assertEqual(groups[0].count, 4)
 
     def test_llm_adapter_is_its_own_group(self):
-        from lora_extract import ModulePlan, group_summary
+        from merge_studio.lora_extract import ModulePlan, group_summary
 
         modules = [
             ModulePlan("net.blocks.0.mlp.layer1.weight", "linear", (64, 64), 8, 1024),
@@ -263,7 +263,7 @@ class GroupSummaryTests(unittest.TestCase):
         self.assertIn("blocks", names)
 
     def test_groups_are_ordered_by_size(self):
-        from lora_extract import ModulePlan, group_summary
+        from merge_studio.lora_extract import ModulePlan, group_summary
 
         modules = [
             ModulePlan("net.small.0.weight", "linear", (8, 8), 4, 64),
@@ -281,7 +281,7 @@ class PreviewHtmlTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def test_a_workable_plan_shows_what_it_would_produce(self):
-        from lora_extract import format_extraction_preview_html, plan_extraction
+        from merge_studio.lora_extract import format_extraction_preview_html, plan_extraction
 
         tensors = dit_blocks(count=4)
         original = write_safetensors_header(self.tmp / "orig.safetensors", tensors)
@@ -294,7 +294,7 @@ class PreviewHtmlTests(unittest.TestCase):
         self.assertNotIn("Cannot extract", html)
 
     def test_a_refused_plan_leads_with_the_reason(self):
-        from lora_extract import ExtractionPlan, format_extraction_preview_html
+        from merge_studio.lora_extract import ExtractionPlan, format_extraction_preview_html
 
         plan = ExtractionPlan(refusals=["Both sides are the same file."])
         html = format_extraction_preview_html(plan)
@@ -303,7 +303,7 @@ class PreviewHtmlTests(unittest.TestCase):
         self.assertIn("Cannot extract", html)
 
     def test_hostile_text_from_a_header_is_escaped(self):
-        from lora_extract import ExtractionPlan, format_extraction_preview_html
+        from merge_studio.lora_extract import ExtractionPlan, format_extraction_preview_html
 
         payload = "<img src=x onerror=alert(1)>"
         plan = ExtractionPlan(
@@ -327,7 +327,7 @@ class LoraKeyNamingTests(unittest.TestCase):
     """
 
     def test_net_prefix_becomes_diffusion_model(self):
-        from lora_extract import lora_key_base
+        from merge_studio.lora_extract import lora_key_base
 
         self.assertEqual(
             lora_key_base("net.blocks.0.self_attn.q_proj.weight"),
@@ -335,7 +335,7 @@ class LoraKeyNamingTests(unittest.TestCase):
         )
 
     def test_full_diffusion_prefix_is_normalised(self):
-        from lora_extract import lora_key_base
+        from merge_studio.lora_extract import lora_key_base
 
         self.assertEqual(
             lora_key_base("model.diffusion_model.input_blocks.4.0.weight"),
@@ -343,7 +343,7 @@ class LoraKeyNamingTests(unittest.TestCase):
         )
 
     def test_llm_adapter_keeps_its_path(self):
-        from lora_extract import lora_key_base
+        from merge_studio.lora_extract import lora_key_base
 
         # Forge rewrites this to text_encoders.qwen3_06b on load; we emit the
         # natural name and let it do that.
@@ -353,7 +353,7 @@ class LoraKeyNamingTests(unittest.TestCase):
         )
 
     def test_bias_resolves_to_the_same_base(self):
-        from lora_extract import lora_key_base
+        from merge_studio.lora_extract import lora_key_base
 
         self.assertEqual(
             lora_key_base("net.blocks.0.mlp.layer1.bias"),
@@ -361,7 +361,7 @@ class LoraKeyNamingTests(unittest.TestCase):
         )
 
     def test_vae_and_text_encoder_are_out_of_scope(self):
-        from lora_extract import lora_key_base
+        from merge_studio.lora_extract import lora_key_base
 
         self.assertIsNone(lora_key_base("first_stage_model.decoder.conv_in.weight"))
         self.assertIsNone(lora_key_base("conditioner.embedders.0.transformer.weight"))
@@ -385,7 +385,7 @@ class SvdFactorsTests(unittest.TestCase):
         self.rng = np.random.default_rng(0)
 
     def test_a_rank_8_delta_is_recovered_exactly(self):
-        from lora_extract import svd_factors
+        from merge_studio.lora_extract import svd_factors
 
         np = self.np
         b = self.rng.standard_normal((64, 8))
@@ -399,7 +399,7 @@ class SvdFactorsTests(unittest.TestCase):
         np.testing.assert_allclose(up @ down, delta, atol=1e-9)
 
     def test_truncating_below_the_true_rank_loses_signal(self):
-        from lora_extract import svd_factors
+        from merge_studio.lora_extract import svd_factors
 
         np = self.np
         delta = self.rng.standard_normal((64, 8)) @ self.rng.standard_normal((8, 32))
@@ -410,7 +410,7 @@ class SvdFactorsTests(unittest.TestCase):
         self.assertGreater(np.abs(up @ down - delta).max(), 1e-3)
 
     def test_rank_cannot_exceed_the_smaller_dimension(self):
-        from lora_extract import svd_factors
+        from merge_studio.lora_extract import svd_factors
 
         np = self.np
         delta = self.rng.standard_normal((64, 8))
@@ -421,7 +421,7 @@ class SvdFactorsTests(unittest.TestCase):
         self.assertEqual(down.shape[0], 8)
 
     def test_clamping_bounds_the_factors(self):
-        from lora_extract import svd_factors
+        from merge_studio.lora_extract import svd_factors
 
         np = self.np
         delta = self.rng.standard_normal((32, 32))
@@ -433,7 +433,7 @@ class SvdFactorsTests(unittest.TestCase):
         self.assertLess(np.abs(clamped).max(), np.abs(loose).max())
 
     def test_conv_kernels_round_trip_through_the_flattened_form(self):
-        from lora_extract import svd_factors
+        from merge_studio.lora_extract import svd_factors
 
         np = self.np
         kernel = self.rng.standard_normal((16, 8, 3, 3))
@@ -460,7 +460,7 @@ class ExtractionMetadataTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def _plan(self):
-        from lora_extract import plan_extraction
+        from merge_studio.lora_extract import plan_extraction
 
         tensors = dit_blocks(count=2)
         original = write_safetensors_header(self.tmp / "orig.safetensors", tensors)
@@ -468,7 +468,7 @@ class ExtractionMetadataTests(unittest.TestCase):
         return plan_extraction(original, tuned, rank=16)
 
     def test_every_field_is_a_string(self):
-        from lora_extract import extraction_metadata
+        from merge_studio.lora_extract import extraction_metadata
 
         metadata = extraction_metadata(self._plan())
 
@@ -476,8 +476,8 @@ class ExtractionMetadataTests(unittest.TestCase):
             self.assertIsInstance(value, str, f"{key} is not a string")
 
     def test_the_inspector_recognises_it_as_an_extraction(self):
-        from aux_inspector import _extraction_info
-        from lora_extract import extraction_metadata
+        from merge_studio.aux_inspector import _extraction_info
+        from merge_studio.lora_extract import extraction_metadata
 
         info = _extraction_info(extraction_metadata(self._plan()))
 
@@ -486,7 +486,7 @@ class ExtractionMetadataTests(unittest.TestCase):
         self.assertEqual(info["rank"], "16")
 
     def test_the_source_prefixes_are_recorded(self):
-        from lora_extract import extraction_metadata
+        from merge_studio.lora_extract import extraction_metadata
 
         metadata = extraction_metadata(self._plan())
 

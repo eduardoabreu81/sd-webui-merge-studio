@@ -25,8 +25,8 @@ import re
 import struct
 from typing import Any
 
-from anima_remap import ANIMA_BLOCK_SIZES
-from checkpoint_inspector import _detect_precision, read_safetensors_header
+from .anima_remap import ANIMA_BLOCK_SIZES
+from .checkpoint_inspector import _detect_precision, read_safetensors_header
 
 # Key conventions a LoRA may use for the main block stack, matching
 # extensions-builtin/sd_forge_lora/networks.py::process_anima.

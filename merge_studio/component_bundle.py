@@ -21,9 +21,9 @@ import hashlib
 import os
 from dataclasses import dataclass, field
 
-from checkpoint_inspector import read_safetensors_header
-from component_registry import SupportState, apply_policy, get_slot_policy
-from forge_capabilities import ForgeCapabilityError
+from .checkpoint_inspector import read_safetensors_header
+from .component_registry import SupportState, apply_policy, get_slot_policy
+from .forge_capabilities import ForgeCapabilityError
 
 #: Only what a header can pin down on its own. Everything else waits for the
 #: capability probe -- see `checkpoint_inspector.infer_architecture_id`, which
@@ -252,7 +252,7 @@ def build_component_plan(
     caller can name it and offer UNet only.
     """
     if inspect_fn is None:  # pragma: no cover - the real inspector by default
-        from aux_inspector import inspect_module as inspect_fn
+        from .aux_inspector import inspect_module as inspect_fn
 
     selectable, embedded_only, support, prefixes = _declared_slots(
         architecture_id, capability_profile
@@ -666,7 +666,7 @@ def validate_loaded_components(engine, plan: ComponentPlan) -> ComponentPlan:
     None and raised on everything; missing slots are data, so they need to come
     back rather than blow up.)
     """
-    from forge_capabilities import capability_profile_from_engine, is_anima_profile
+    from .forge_capabilities import capability_profile_from_engine, is_anima_profile
 
     try:
         profile = capability_profile_from_engine(engine)

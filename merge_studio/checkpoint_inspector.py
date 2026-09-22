@@ -17,8 +17,8 @@ import os
 import struct
 from typing import Any
 
-from anima_remap import block_count_from_keys
-from architecture_guess import (
+from .anima_remap import block_count_from_keys
+from .architecture_guess import (
     anima_generation,
     detect_prediction_markers,
     guess_architecture,
@@ -1093,7 +1093,7 @@ def _format_recipe_ratios(recipe: dict[str, Any], block_count: Any) -> str:
     fact it had ten rules. Delegates the reading to `elemental_weights`, the
     parser that also has to exist for the merge side.
     """
-    from elemental_weights import (
+    from .elemental_weights import (
         format_block_array_html,
         format_weight_profile_html,
         parse_weight_spec,

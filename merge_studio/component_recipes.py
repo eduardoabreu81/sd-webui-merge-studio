@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 
-from component_registry import get_slot_policy
+from .component_registry import get_slot_policy
 
 #: Bumped from 1 when component slots arrived. v1 recipes still load.
 RECIPE_VERSION = 2

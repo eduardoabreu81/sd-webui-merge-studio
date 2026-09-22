@@ -27,14 +27,14 @@ from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import sd_models, shared
 
-from lora_bake import (
+from .lora_bake import (
     _import_lora_networks,
     _lora_activation_text,
     _lora_touches_llm_adapter,
     _pick_device,
 )
-from checkpoint_inspector import load_custom_vae_state_dict
-from component_bundle import (
+from .checkpoint_inspector import load_custom_vae_state_dict
+from .component_bundle import (
     ComponentSelection,
     ComponentValidationError,
     OutputValidation,
@@ -45,13 +45,13 @@ from component_bundle import (
     preflight_component_plan,
     validate_loaded_components,
 )
-from forge_capabilities import vae_key_prefix_for_saving
-import anima_remap
-import elemental_weights
-from quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
-from precision_stats import dominant_float_dtype, match_dtype
-from source_precision import apply_component_precision, try_match_source_dtypes
-from merge_modes import (
+from .forge_capabilities import vae_key_prefix_for_saving
+from . import anima_remap
+from . import elemental_weights
+from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from .precision_stats import dominant_float_dtype, match_dtype
+from .source_precision import apply_component_precision, try_match_source_dtypes
+from .merge_modes import (
     INTERP_NO_INTERPOLATION,
     MergeError,
     blend_tensors,
@@ -242,7 +242,7 @@ def _compose_modular_primary(primary_info, selections, save_mode, progress_cb):
     fail here fails before the merge starts, because a component problem found
     after the tensors have been blended costs the whole run.
     """
-    from checkpoint_inspector import infer_architecture_id, inspect_checkpoint
+    from .checkpoint_inspector import infer_architecture_id, inspect_checkpoint
 
     info = inspect_checkpoint(primary_info.filename)
     if "error" in info:
@@ -693,7 +693,7 @@ def merge_checkpoints(
 
     # Fast architecture compatibility check before heavy engine loading
     try:
-        from checkpoint_inspector import inspect_checkpoint, get_model_family
+        from .checkpoint_inspector import inspect_checkpoint, get_model_family
         p_insp = inspect_checkpoint(primary_info.filename)
         fam_a = get_model_family(p_insp.get("architecture", ""))
 

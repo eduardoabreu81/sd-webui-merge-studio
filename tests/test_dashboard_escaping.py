@@ -7,8 +7,8 @@ Gradio page.
 
 import unittest
 
-from aux_inspector import format_lora_dashboard_html, format_module_dashboard_html
-from checkpoint_inspector import format_recipe_dashboard_html
+from merge_studio.aux_inspector import format_lora_dashboard_html, format_module_dashboard_html
+from merge_studio.checkpoint_inspector import format_recipe_dashboard_html
 
 PAYLOAD = "<img src=x onerror=alert(1)>"
 ESCAPED = "&lt;img src=x onerror=alert(1)&gt;"
@@ -110,7 +110,7 @@ class RecipeComponentEscapingTests(unittest.TestCase):
     inside a downloaded .safetensors header, like everything else here."""
 
     def _dashboard(self, name):
-        from checkpoint_inspector import format_recipe_dashboard_html
+        from merge_studio.checkpoint_inspector import format_recipe_dashboard_html
 
         return format_recipe_dashboard_html(
             {
@@ -149,7 +149,7 @@ class RecipeComponentEscapingTests(unittest.TestCase):
         self.assertNotIn("&amp;lt;", html)
 
     def test_a_hostile_slot_label_cannot_inject_markup(self):
-        from checkpoint_inspector import format_recipe_dashboard_html
+        from merge_studio.checkpoint_inspector import format_recipe_dashboard_html
 
         html = format_recipe_dashboard_html(
             {

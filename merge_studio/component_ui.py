@@ -19,8 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from component_bundle import PROVISIONAL_SLOTS
-from component_registry import (
+from .component_bundle import PROVISIONAL_SLOTS
+from .component_registry import (
     SupportState,
     apply_policy,
     get_slot_policy,

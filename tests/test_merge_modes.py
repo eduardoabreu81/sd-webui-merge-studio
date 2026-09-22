@@ -15,7 +15,7 @@ import unittest
 
 import numpy as np
 
-from merge_modes import (
+from merge_studio.merge_modes import (
     INTERP_ADD_DIFFERENCE,
     INTERP_DARE,
     INTERP_NO_INTERPOLATION,
@@ -29,7 +29,7 @@ from merge_modes import (
     make_seeded_rand,
     merge_mode,
 )
-from checkpoint_inspector import _describe_merge_math
+from merge_studio.checkpoint_inspector import _describe_merge_math
 
 
 class Num:

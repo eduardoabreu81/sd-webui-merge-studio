@@ -12,14 +12,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from component_ui import (  # noqa: E402
+from merge_studio.component_ui import (  # noqa: E402
     COMPONENT_FORMAT_CHOICES,
     KEEP_EMBEDDED,
     build_component_rows,
     missing_slot_message,
     parse_component_rows,
 )
-from forge_capabilities import capability_profile_from_engine  # noqa: E402
+from merge_studio.forge_capabilities import capability_profile_from_engine  # noqa: E402
 
 
 def engine(clip_target, *, image_model="anima", text_prefix=("text_encoders.",),

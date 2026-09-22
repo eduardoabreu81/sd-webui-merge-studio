@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aux_inspector import (
+from merge_studio.aux_inspector import (
     detect_file_kind,
     format_lora_dashboard_html,
     inspect_lora,
@@ -108,7 +108,7 @@ class FileKindSurvivesTheClassifierReorderTests(unittest.TestCase):
     def test_a_standalone_t5_is_an_encoder_not_an_autoencoder(self):
         """Its ``encoder.block.*`` keys used to satisfy the generic
         encoder/decoder rule and land it in the VAE bucket."""
-        from aux_inspector import inspect_module
+        from merge_studio.aux_inspector import inspect_module
 
         info = inspect_module(self.write("t5xxl.safetensors", t5_encoder(vocab=32128)))
         self.assertEqual("text_encoder", info["kind"])

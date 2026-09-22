@@ -9,7 +9,7 @@ model's unquantized weights are actually in.
 
 import unittest
 
-from precision_stats import dominant_float_dtype, match_dtype
+from merge_studio.precision_stats import dominant_float_dtype, match_dtype
 
 
 class FakeDtype:

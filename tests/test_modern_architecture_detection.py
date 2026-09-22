@@ -19,13 +19,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from safetensors_helpers import build_header  # noqa: E402
 
-from anima_remap import (  # noqa: E402
+from merge_studio.anima_remap import (  # noqa: E402
     block_count_from_keys,
     is_anima_engine,
     target_to_source,
     target_to_source_from_manifest,
 )
-from checkpoint_inspector import (  # noqa: E402
+from merge_studio.checkpoint_inspector import (  # noqa: E402
     embedded_components_from_keys,
     infer_architecture_id,
 )
@@ -312,7 +312,7 @@ class AnimaShipsUnderTwoNamespacesTests(unittest.TestCase):
     """
 
     def test_both_namespaces_give_the_same_architecture_and_depth(self):
-        from anima_remap import block_count_from_keys
+        from merge_studio.anima_remap import block_count_from_keys
 
         # Every depth in the library appears under `net.`, and the 28-block
         # one appears under both.
@@ -328,7 +328,7 @@ class AnimaShipsUnderTwoNamespacesTests(unittest.TestCase):
         # `state_dict_from_header` only adds the diffusion namespace when
         # neither is present. Adding it on top of `net.` would bury the keys
         # the detector matches on.
-        from architecture_guess import state_dict_from_header
+        from merge_studio.architecture_guess import state_dict_from_header
 
         for root in ("net.", "model.diffusion_model."):
             with self.subTest(root=root):

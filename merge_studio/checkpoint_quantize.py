@@ -15,7 +15,7 @@ from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import shared
 
-from quant_utils import convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from .quant_utils import convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
 
 
 class QuantizeError(RuntimeError):

@@ -1,6 +1,6 @@
 import unittest
 
-from checkpoint_inspector import format_recipe_dashboard_html
+from merge_studio.checkpoint_inspector import format_recipe_dashboard_html
 
 
 class CheckpointRecipeProvenanceTests(unittest.TestCase):

@@ -28,8 +28,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from aux_inspector import _lora_algorithm, _lora_block_info
-from checkpoint_inspector import _esc, read_safetensors_header
+from .aux_inspector import _lora_algorithm, _lora_block_info
+from .checkpoint_inspector import _esc, read_safetensors_header
 
 #: The two spellings of the same pair. kohya-style files write
 #: `lora_down`/`lora_up`; diffusers-style ones write `lora_A`/`lora_B`. Both

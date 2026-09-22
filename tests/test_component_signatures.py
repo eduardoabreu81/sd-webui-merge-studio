@@ -25,7 +25,7 @@ from safetensors_helpers import (  # noqa: E402
     write_safetensors_header,
 )
 
-from aux_inspector import (  # noqa: E402
+from merge_studio.aux_inspector import (  # noqa: E402
     classify_component_header,
     detect_unsupported_storage,
     inspect_module,

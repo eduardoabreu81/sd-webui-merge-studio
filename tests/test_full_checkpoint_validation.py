@@ -19,13 +19,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from safetensors_helpers import write_safetensors_header  # noqa: E402
 
-from component_bundle import (  # noqa: E402
+from merge_studio.component_bundle import (  # noqa: E402
     ComponentPlan,
     OutputValidation,
     ResolvedComponent,
     validate_aio_output,
 )
-from component_registry import SupportState  # noqa: E402
+from merge_studio.component_registry import SupportState  # noqa: E402
 
 
 def component(slot_id, *, output_format="same", precision="BF16", path="src.safetensors",

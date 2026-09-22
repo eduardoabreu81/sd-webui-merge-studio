@@ -10,7 +10,7 @@ detect_turbo already labels filename evidence on the checkpoint side
 
 import unittest
 
-from aux_inspector import format_lora_dashboard_html
+from merge_studio.aux_inspector import format_lora_dashboard_html
 
 
 def lora(**overrides):

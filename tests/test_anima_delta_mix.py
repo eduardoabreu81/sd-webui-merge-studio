@@ -23,8 +23,8 @@ put there beside it rather than next to its caller.
 
 import unittest
 
-import anima_remap
-from merge_modes import delta_write
+from merge_studio import anima_remap
+from merge_studio.merge_modes import delta_write
 
 
 class Num:
@@ -193,7 +193,7 @@ class DeltaWriteTests(unittest.TestCase):
         # be written into a block only one of them has, and it is reached only
         # through the cross-generation path -- putting it in the mode dropdown
         # would offer it for merges that have no inserted blocks at all.
-        import merge_modes
+        from merge_studio import merge_modes
 
         self.assertNotIn(
             "delta", [m.key for m in merge_modes.MERGE_MODES]
