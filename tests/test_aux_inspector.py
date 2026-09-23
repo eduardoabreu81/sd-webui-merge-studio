@@ -115,5 +115,44 @@ class FileKindSurvivesTheClassifierReorderTests(unittest.TestCase):
         self.assertEqual("t5xxl", info["signature_id"])
 
 
+class FrozenAdapterModulesAreNotAChangeTests(unittest.TestCase):
+    """PEFT starts lora_A random and lora_B at zero. A LoRA whose trainer froze
+    the llm_adapter still ships its modules -- Turbo-ANIMA-v2.9 carries 186
+    such tensors -- with lora_A as large as any trained one and lora_B at 0,
+    so the change it applies there is nil. Measuring every factor saw 1x the
+    main blocks and flagged it."""
+
+    def write_lora(self, adapter_b_scale: float) -> str:
+        import numpy as np
+        from safetensors.numpy import save_file
+
+        rng = np.random.default_rng(0)
+        tensors = {}
+        for i in range(2):
+            main = f"diffusion_model.blocks.{i}.self_attn.q_proj"
+            tensors[f"{main}.lora_A.weight"] = rng.normal(0, 2e-2, (16, 64)).astype(np.float32)
+            tensors[f"{main}.lora_B.weight"] = rng.normal(0, 4e-4, (64, 16)).astype(np.float32)
+            adapter = f"diffusion_model.llm_adapter.blocks.{i}.self_attn.q_proj"
+            tensors[f"{adapter}.lora_A.weight"] = rng.normal(0, 2e-2, (16, 64)).astype(np.float32)
+            tensors[f"{adapter}.lora_B.weight"] = (
+                rng.normal(0, 4e-4, (64, 16)) * adapter_b_scale
+            ).astype(np.float32)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, "turbo.safetensors")
+        save_file(tensors, path)
+        return path
+
+    def test_an_adapter_with_zero_lora_b_is_not_significant(self):
+        info = inspect_lora(self.write_lora(adapter_b_scale=0.0))
+
+        self.assertFalse(info["llm_adapter_significant"])
+
+    def test_an_adapter_that_was_trained_is_still_flagged(self):
+        info = inspect_lora(self.write_lora(adapter_b_scale=1.0))
+
+        self.assertTrue(info["llm_adapter_significant"])
+
+
 if __name__ == "__main__":
     unittest.main()

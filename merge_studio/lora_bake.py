@@ -18,7 +18,7 @@ from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import shared
 
-from .aux_inspector import embedded_activation_text
+from .aux_inspector import embedded_activation_text, magnitude_markers
 from .checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
 from .forge_capabilities import vae_key_prefix_for_saving
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
@@ -84,17 +84,6 @@ def _lora_activation_text(lora_path: str) -> tuple[str, str]:
 # to spare.
 _LLM_ADAPTER_SIGNIFICANCE = 0.01
 
-# Covers the LyCORIS family as well as plain LoRA, since Forge applies them
-# all through the same weight-adapter path and any of them can carry
-# llm_adapter weights. Dots kept on the diff-style markers: a bare "diff" is
-# a substring of "model.diffusion_model.", so it would match every key in the
-# LoRA and pull scalars like alpha into the magnitude comparison.
-_LORA_FACTOR_MARKERS = (
-    "lora_down", "lora_up", "lora_A", "lora_B",
-    "hada_w", "lokr_w", "oft_blocks", "oft_diag", "dora_scale",
-    ".diff.", ".diff_b",
-)
-
 
 def _lora_touches_llm_adapter(lora_sd: dict) -> bool:
     """Whether a LoRA meaningfully changes the LLM (Qwen3) adapter.
@@ -106,13 +95,15 @@ def _lora_touches_llm_adapter(lora_sd: dict) -> bool:
     Presence of llm_adapter keys is not enough to conclude that, though: an
     SVD-extracted LoRA writes a factor pair for every module it scanned, so
     modules whose delta was zero still show up, carrying only numerical
-    noise. Comparing magnitude against the LoRA's own main blocks tells the
-    two apart. Matches both key conventions handled by
-    extensions-builtin/sd_forge_lora/networks.py::process_anima
+    noise, and a trained LoRA can ship adapter modules its trainer froze.
+    Comparing magnitude against the LoRA's own main blocks, on the factors
+    `magnitude_markers` picks, tells them apart. Matches both key conventions
+    handled by extensions-builtin/sd_forge_lora/networks.py::process_anima
     ("diffusion_model.llm_adapter" and "lora_unet_llm_adapter")."""
+    markers = magnitude_markers(lora_sd)
     llm_sq = llm_n = main_sq = main_n = 0.0
     for k, v in lora_sd.items():
-        if not any(m in k for m in _LORA_FACTOR_MARKERS):
+        if not any(m in k for m in markers):
             continue
         try:
             t = v.float()

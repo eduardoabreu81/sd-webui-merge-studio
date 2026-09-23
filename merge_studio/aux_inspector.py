@@ -60,6 +60,28 @@ _FACTOR_MARKERS = (
     ".diff.", ".diff_b",                           # plain difference patches
 )
 
+# The factor a LoRA trainer initialises to zero: kohya's lora_up, PEFT's
+# lora_B. A module that was never trained keeps it at exactly zero while its
+# other factor holds random init, so the change it applies is nil even though
+# half its tensors look as large as any trained one. Measured on the library:
+# Turbo-ANIMA-v1.5, v2.9 and anima-turbo-lora-v0.2 all carry llm_adapter
+# lora_A at the main blocks' size and lora_B at 0 (v2.9: 9e-10).
+_ZERO_INIT_FACTOR_MARKERS = (
+    "lora_up", "lora_B", "lora.up.weight", "lora_linear_layer.up",
+)
+
+
+def magnitude_markers(keys) -> tuple[str, ...]:
+    """Which factors to weigh when judging how much a LoRA changes a module.
+
+    The zero-initialised side when the file is built from LoRA pairs, since it
+    alone tells an untouched module from a trained one; every factor for the
+    other adapters, whose initialisation this does not model.
+    """
+    if any(m in k for k in keys for m in _ZERO_INIT_FACTOR_MARKERS):
+        return _ZERO_INIT_FACTOR_MARKERS
+    return _FACTOR_MARKERS
+
 # GLoRA names its factors a1/a2/b1/b2, which are too generic to test one at a
 # time, so it is recognised only when the pair appears together.
 _GLORA_MARKERS = (".a1.weight", ".b1.weight")
@@ -215,12 +237,17 @@ def _llm_adapter_ratio(path: str, header: dict[str, Any], data_offset: int) -> f
 
     Presence of llm_adapter keys says nothing on its own: a LoRA extracted by
     SVD emits a factor pair for every module it scanned, so modules whose delta
-    was zero still appear, carrying only numerical noise. Magnitude separates
-    those from a LoRA that genuinely trained the adapter.
+    was zero still appear, carrying only numerical noise, and a trained LoRA
+    can ship adapter modules its trainer froze. Magnitude separates those from
+    a LoRA that genuinely trained the adapter -- read on the factors
+    `magnitude_markers` picks, since the random-init side of a frozen module is
+    as large as a trained one.
 
     Samples a bounded slice rather than reading whole tensors, so this stays
     quick even over a network share. Returns None if nothing could be read.
     """
+
+    markers = magnitude_markers(k for k in header if k != "__metadata__")
 
     def _pick(is_llm: bool) -> list[str]:
         out = [
@@ -228,7 +255,7 @@ def _llm_adapter_ratio(path: str, header: dict[str, Any], data_offset: int) -> f
             for k, v in header.items()
             if k != "__metadata__"
             and isinstance(v, dict)
-            and any(m in k for m in _FACTOR_MARKERS)
+            and any(m in k for m in markers)
             and (("llm_adapter" in k) == is_llm)
         ]
         return sorted(out)[:_SAMPLE_TENSORS]
