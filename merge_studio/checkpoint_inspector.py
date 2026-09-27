@@ -437,6 +437,60 @@ def _model_name(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+_LOADER_TYPES = ("UNETLoader", "CheckpointLoaderSimple", "CheckpointLoader", "DiffusersLoader")
+_LOADER_NAME_INPUTS = ("unet_name", "ckpt_name", "model_path")
+# Deep enough for any real LoRA / sampling chain; bounds a cyclic graph.
+_MAX_LINK_HOPS = 32
+
+
+def _source_model_name(prompt: dict[str, Any], link: Any) -> str | None:
+    """The loader file a MODEL input traces back to, or None.
+
+    Follows single-model nodes (LoRA loaders, ModelSampling*) upstream. Stops
+    at another merge: its output is a mix, not one file, and naming either
+    side of it would repeat the mistake this exists to fix."""
+    for _ in range(_MAX_LINK_HOPS):
+        if not (isinstance(link, list) and link):
+            return None
+        node = prompt.get(str(link[0]))
+        if not isinstance(node, dict):
+            return None
+        ctype = node.get("class_type", "")
+        inp = node.get("inputs", {})
+        if not isinstance(inp, dict):
+            return None
+        if ctype in _LOADER_TYPES:
+            return next((_model_name(inp.get(k)) for k in _LOADER_NAME_INPUTS if _model_name(inp.get(k))), None)
+        if "ModelMerge" in ctype:
+            return None
+        link = inp.get("model")
+    return None
+
+
+def _share_pct(share: float) -> str:
+    """0.04 -> '4%', 0.955 -> '95.5%': whole numbers when they are exact."""
+    pct = round(share * 100, 1)
+    return f"{pct:g}%"
+
+
+def _merge_inputs(prompt: dict[str, Any], ctype: str, inp: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each MODEL input of a merge node with the share it gets in the output.
+
+    Only ModelMergeSimple has a share to report. ComfyUI writes it as
+    `model1.add_patches(model2, 1.0 - ratio, ratio)`, so the output is
+    `ratio * model1 + (1 - ratio) * model2`: the ratio is model1's share,
+    and the node's default of 1.0 returns model1 untouched. Other merge
+    nodes (Add, Subtract, per-block) get no share rather than a wrong one."""
+    ratio = inp.get("ratio")
+    has_share = ctype == "ModelMergeSimple" and isinstance(ratio, (int, float)) and not isinstance(ratio, bool)
+    shares = {"model1": float(ratio), "model2": 1.0 - float(ratio)} if has_share else {}
+    return [
+        {"slot": slot, "name": _source_model_name(prompt, inp.get(slot)), "share": shares.get(slot)}
+        for slot in ("model1", "model2")
+        if slot in inp
+    ]
+
+
 def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
     prompt_raw = metadata.get("prompt")
     wf_raw = metadata.get("workflow")
@@ -509,7 +563,7 @@ def _parse_comfy_recipe(metadata: dict[str, Any]) -> dict[str, Any] | None:
 
             elif "ModelMerge" in ctype:
                 ratio = inp.get("ratio", "N/A")
-                merges.append({"type": ctype, "ratio": ratio})
+                merges.append({"type": ctype, "ratio": ratio, "inputs": _merge_inputs(prompt, ctype, inp)})
 
         if not loras:
             for nid, node in prompt.items():
@@ -1529,15 +1583,31 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         c_encoders = comfy_recipe.get("encoders", [])
         c_vaes = comfy_recipe.get("vaes", [])
 
+        # A loader that feeds exactly one merge input gets that input's role
+        # and share on its own card; one feeding several stays unlabelled.
+        roles: dict[str, list[str]] = {}
+        for mg in c_merges:
+            for mi in mg.get("inputs", ()):
+                if mi.get("name"):
+                    role = mi["slot"] + (f" · {_share_pct(mi['share'])}" if mi.get("share") is not None else "")
+                    roles.setdefault(mi["name"], []).append(role)
+
         # Cards for base models
         b_cards = ""
         for bm in c_models:
             b_name = bm.get("name", "Unknown")
             b_hash = bm.get("hash", "")
             b_node = bm.get("node", "Loader")
+            b_roles = roles.get(b_name, [])
+            role_badge = (
+                f"<span style='float: right; font-size: 12px; color: #10b981; font-family: monospace; font-weight: 600;'>{_esc(b_roles[0])}</span>"
+                if len(b_roles) == 1
+                else ""
+            )
             hash_snippet = f"<div style='font-size: 11px; color: #6b7280; font-family: monospace; margin-top: 2px;'>SHA256: {_esc(b_hash)}</div>" if b_hash else ""
             b_cards += (
                 f"<div style='padding: 10px 14px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); margin-bottom: 8px;'>"
+                f"{role_badge}"
                 f"<div style='font-size: 11px; text-transform: uppercase; color: #38bdf8; font-weight: 700; margin-bottom: 2px;'>Base Model ({_esc(b_node)})</div>"
                 f"<div style='font-size: 14px; font-weight: 600; color: #f3f4f6;'>{_esc(b_name)}</div>"
                 f"{hash_snippet}"
@@ -1549,9 +1619,25 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
         for mg in c_merges:
             m_type = mg.get("type", "ModelMerge")
             m_ratio = mg.get("ratio", "N/A")
+            m_inputs = mg.get("inputs", ())
+            share_rows = "".join(
+                f"<div style='font-size: 12px; color: #9ca3af; margin-left: 12px;'>"
+                f"<code>{_esc(mi['slot'])}</code> {_esc(mi['name'] or '(output of another node)')}"
+                + (f" &rarr; <b style='color: #10b981;'>{_share_pct(mi['share'])}</b>" if mi.get("share") is not None else "")
+                + "</div>"
+                for mi in m_inputs
+            )
+            share_note = (
+                "<div style='font-size: 11px; color: #6b7280; margin-left: 12px; margin-top: 2px;'>"
+                "ComfyUI's ratio is model1's share: output = ratio &times; model1 + (1 &minus; ratio) &times; model2."
+                "</div>"
+                if any(mi.get("share") is not None for mi in m_inputs)
+                else ""
+            )
             m_cards += (
                 f"<div style='margin-bottom: 8px; font-size: 13px; color: #d1d5db;'>"
                 f"<b>ComfyUI Merge Node:</b> <code style='color: #38bdf8;'>{_esc(m_type)} (Ratio: {_esc(m_ratio)})</code>"
+                f"{share_rows}{share_note}"
                 f"</div>"
             )
 
