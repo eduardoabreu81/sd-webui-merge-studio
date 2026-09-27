@@ -18,6 +18,7 @@ import struct
 from typing import Any
 
 from .anima_remap import block_count_from_keys
+from .merge_lineage import render_lineage_html
 from .architecture_guess import (
     anima_generation,
     detect_prediction_markers,
@@ -1244,6 +1245,18 @@ def _format_recipe_ratios(recipe: dict[str, Any], block_count: Any) -> str:
     blocks = block_count if isinstance(block_count, int) and block_count > 0 else 28
 
     sections = []
+    # chattiori records `block_weights: true` beside `alpha_info: "0.0"`, and
+    # older versions of it wrote no weight values at all. The 0.0 is only the
+    # base the rules override, so leaving this unsaid reads as a 100% A merge.
+    recorded = ("alpha_raw", "beta_raw", "alpha_weights", "beta_weights", "multiplier")
+    if recipe.get("block_weights") is True and not any(recipe.get(f) not in (None, "") for f in recorded):
+        sections.append(
+            "<div style='margin-top:4px;font-size:12.5px;color:#f59e0b;'>"
+            "Per-block weights were used, but their values were not recorded in this file "
+            "<span style='color:#9ca3af;'>&mdash; the merger kept only the base value "
+            f"(<code>{_esc(recipe.get('alpha_info', '?'))}</code>), which the per-block rules override. "
+            "The real proportions cannot be read from here.</span></div>"
+        )
     for field, label in _RATIO_FIELDS:
         raw = recipe.get(field)
         if raw in (None, ""):
@@ -1566,6 +1579,7 @@ def format_recipe_dashboard_html(info: dict[str, Any]) -> str:
             f"</div>"
             f"{math_html}"
             f"<div style='margin-top: 10px;'>{models_cards}</div>"
+            f"{render_lineage_html(recipe, models)}"
             f"{components_html}"
             f"{loras_html}"
             f"</div>"
