@@ -289,19 +289,37 @@ class TraditionalArchitecturesAreStillProfilesTests(unittest.TestCase):
 
 
 class GenerativeEvidenceTests(unittest.TestCase):
-    def test_rgb_latent_format_marks_a_non_generative_profile(self):
-        """PiD is the only class with an RGB latent format -- it is an i2i
-        upscaler, not a checkpoint architecture. Identified by capability."""
-        engine = make_engine(
-            make_config(
-                "SomeUpscaler",
-                image_model="pid",
-                clip_target={"gemma2_2b": "text_encoder"},
-                latent_format="RGB",
+    def pixel_space(self, image_model, clip_target):
+        return capability_profile_from_engine(
+            make_engine(
+                make_config(
+                    "PixelModel",
+                    image_model=image_model,
+                    clip_target=clip_target,
+                    latent_format="RGB",
+                )
             )
         )
-        profile = capability_profile_from_engine(engine)
+
+    def test_pid_is_not_generative(self):
+        # An i2i upscaler, not a checkpoint architecture.
+        profile = self.pixel_space("pid", {"gemma2_2b": "text_encoder"})
         self.assertFalse(profile.is_generative)
+
+    def test_a_pixel_space_text_to_image_model_is_generative(self):
+        # Iris 3B (an extension) shares PiD's latent format and prefixes. An
+        # RGB latent used to mark it non-generative, which hid every slot.
+        profile = self.pixel_space("iris", {"qwen3vl_4b.transformer": "text_encoder"})
+        self.assertTrue(profile.is_generative)
+        self.assertEqual(("qwen3vl_4b",), tuple(t.forge_target for t in profile.text_targets))
+
+    def test_a_pixel_space_model_has_no_vae_target(self):
+        # Forge declares a VAE prefix for these too, but there is no
+        # autoencoder to put there.
+        for image_model in ("pid", "iris"):
+            with self.subTest(image_model=image_model):
+                profile = self.pixel_space(image_model, {"gemma2_2b": "text_encoder"})
+                self.assertIsNone(profile.vae_target)
 
     def test_a_latent_space_format_is_generative(self):
         self.assertTrue(capability_profile_from_engine(flux_like("W")).is_generative)

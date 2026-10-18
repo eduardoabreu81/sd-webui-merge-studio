@@ -195,11 +195,24 @@ class DisplayLabelTests(unittest.TestCase):
 
     def test_families_that_must_not_be_confused_stay_apart(self):
         distinct = ("SD15", "SDXL", "Flux", "Anima", "ZImage", "ErnieImage",
-                    "Krea2", "QwenImage", "WAN21_T2V", "Chroma")
+                    "Krea2", "QwenImage", "WAN21_T2V", "Chroma",
+                    "QwenImage21", "Flux3", "MossImage", "Iris")
         families = {
             name: get_model_family(ag._DETECTOR_LABELS[name]) for name in distinct
         }
         self.assertEqual(len(distinct), len(set(families.values())), families)
+
+    def test_a_newer_generation_is_not_read_as_its_namesake(self):
+        # "FLUX 3" contains "flux" and "Qwen-Image 2.1" contains "qwen-image";
+        # matched in the wrong order, each would pass as mergeable with a model
+        # whose blocks it does not share.
+        for new, old in (("Flux3", "Flux"), ("Flux3", "Flux2K4B"),
+                         ("QwenImage21", "QwenImage")):
+            with self.subTest(new=new, old=old):
+                self.assertNotEqual(
+                    get_model_family(ag._DETECTOR_LABELS[new]),
+                    get_model_family(ag._DETECTOR_LABELS[old]),
+                )
 
     def test_the_two_wan_variants_share_a_family(self):
         # Same architecture, different conditioning. Splitting them would put a

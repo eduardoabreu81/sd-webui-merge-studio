@@ -173,15 +173,28 @@ class TraditionalArchitecturesKeepAVaeSlotTests(unittest.TestCase):
         self.assertEqual(("vae",), roles(policy_for("base")))
 
 
-class PiDIsExcludedByCapabilityTests(unittest.TestCase):
-    def test_an_rgb_latent_format_is_not_a_checkpoint_architecture(self):
-        engine = make_engine("lumina2", class_name="SomethingElse")
-        engine.model_config.latent_format = type("RGB", (), {})
-        policy = apply_policy(capability_profile_from_engine(engine))
+def pixel_space_policy(image_model, clip_target):
+    engine = make_engine("lumina2", class_name="SomethingElse", image_model=image_model)
+    engine.model_config.latent_format = type("RGB", (), {})
+    engine.model_config.clip_target = clip_target
+    return apply_policy(capability_profile_from_engine(engine))
+
+
+class PixelSpaceModelsTests(unittest.TestCase):
+    """PiD and Iris 3B both carry an RGB latent format: one is an upscaler,
+    the other a text-to-image model. Only the family tells them apart."""
+
+    def test_pid_is_not_a_checkpoint_architecture(self):
+        policy = pixel_space_policy("pid", {"gemma2_2b.transformer": "text_encoder"})
         self.assertFalse(policy.is_generative)
         self.assertEqual((), policy.slots)
 
-    def test_no_other_architecture_uses_rgb(self):
+    def test_iris_keeps_its_text_encoder_and_gets_no_vae_slot(self):
+        policy = pixel_space_policy("iris", {"qwen3vl_4b.transformer": "text_encoder"})
+        self.assertTrue(policy.is_generative)
+        self.assertEqual(("qwen3vl_4b",), roles(policy))
+
+    def test_every_latent_space_architecture_is_generative(self):
         for key in CLIP_TARGETS:
             with self.subTest(architecture=key):
                 self.assertTrue(policy_for(key).is_generative)

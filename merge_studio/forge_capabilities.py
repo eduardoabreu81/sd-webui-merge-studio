@@ -48,6 +48,11 @@ KNOWN_FAMILIES = frozenset(
         "krea2",
         "ernie",
         "pid",
+        "qwen_image21",
+        # Added by extensions, not by Forge Neo itself.
+        "flux3",
+        "moss_image",
+        "iris",
     }
 )
 
@@ -55,10 +60,15 @@ KNOWN_FAMILIES = frozenset(
 # separate files. Declared by Forge itself, so it survives renames.
 MODULAR_TEXT_PREFIX = "text_encoders."
 
-# PiD is an i2i upscaler: it works in pixel space, not a latent one. It is the
-# only class carrying this latent format, which makes it excludable by
-# capability rather than by name.
-NON_GENERATIVE_LATENT_FORMAT = "RGB"
+# A model whose "latent" is the RGB image itself. It has no autoencoder, so it
+# gets no VAE slot. This is capability, not purpose: PiD (an i2i upscaler) and
+# Iris 3B (a text-to-image model, from an extension) both carry it.
+PIXEL_SPACE_LATENT_FORMAT = "RGB"
+
+# What no capability tells apart. PiD and Iris declare the same latent format,
+# the same prefixes and one text encoder each, so whether a model generates
+# images at all is the one thing decided by family name here.
+NON_GENERATIVE_FAMILIES = frozenset({"pid"})
 
 
 class ForgeCapabilityError(Exception):
@@ -197,16 +207,20 @@ def capability_profile_from_engine(engine) -> ForgeCapabilityProfile:
             )
         )
 
-    vae_target = ForgeComponentTarget(
-        forge_target="vae",
-        internal_prefixes=vae_prefix,
-        kind="vae",
-    )
-
     unet_config = getattr(config, "unet_config", None) or {}
     family_hint = str(unet_config.get("image_model") or "")
     repo = str(getattr(config, "huggingface_repo", "") or "")
     latent_name = _latent_format_name(config)
+
+    # Forge declares a VAE prefix for every config, pixel-space ones included,
+    # but a model that never leaves pixel space has nothing to decode with.
+    vae_target = None
+    if latent_name != PIXEL_SPACE_LATENT_FORMAT:
+        vae_target = ForgeComponentTarget(
+            forge_target="vae",
+            internal_prefixes=vae_prefix,
+            kind="vae",
+        )
 
     semantic = _fingerprint(
         family_hint,
@@ -227,7 +241,7 @@ def capability_profile_from_engine(engine) -> ForgeCapabilityProfile:
         vae_key_prefix=vae_prefix,
         latent_format_name=latent_name,
         uses_modular_convention=MODULAR_TEXT_PREFIX in text_prefix,
-        is_generative=latent_name != NON_GENERATIVE_LATENT_FORMAT,
+        is_generative=family_hint not in NON_GENERATIVE_FAMILIES,
         generic_discovery=family_hint not in KNOWN_FAMILIES,
         semantic_fingerprint=semantic,
         diagnostic_fingerprint=diagnostic,

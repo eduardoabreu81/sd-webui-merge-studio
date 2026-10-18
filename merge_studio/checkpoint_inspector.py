@@ -296,6 +296,13 @@ def get_model_family(arch: str) -> str:
     arch_lower = arch.lower()
     if "anima" in arch_lower:
         return "anima"
+    # Newer generations whose names contain an older family's: checked first,
+    # or FLUX 3 would pass as Flux.1 and Qwen-Image 2.1 as Qwen-Image. Neither
+    # shares a block layout with its namesake.
+    if "flux 3" in arch_lower:
+        return "flux3"
+    if "qwen-image 2.1" in arch_lower:
+        return "qwenimage21"
     if "flux" in arch_lower:
         return "flux"
     if "wan" in arch_lower:
@@ -317,6 +324,8 @@ def get_model_family(arch: str) -> str:
         ("krea", "krea"),
         ("ernie", "ernie"),
         ("pid", "pid"),
+        ("moss-image", "moss"),
+        ("iris 3b", "iris"),
     ):
         if fragment in arch_lower:
             return family
