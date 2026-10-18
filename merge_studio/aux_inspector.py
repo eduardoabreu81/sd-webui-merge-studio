@@ -392,7 +392,9 @@ _ENCODER_SIGNATURES = (
     ("qwen3_06b", "Qwen3 0.6B — Anima's native text encoder"),
     ("qwen35_4b", "Qwen3.5 4B — Anima-3.8B expanded adapter"),
     ("qwen3_4b", "Qwen3 4B — Z-Image"),
-    ("qwen3vl_4b", "Qwen3-VL 4B — Krea 2"),
+    ("qwen3vl_4b", "Qwen3-VL 4B — Krea 2, FLUX 3, Iris 3B"),
+    ("qwen3vl_8b", "Qwen3-VL 8B — Qwen-Image 2.1"),
+    ("qwen35_9b", "Qwen3.5 9B — MOSS-Image"),
     ("qwen25_7b", "Qwen2.5 7B — Qwen-Image"),
     ("ministral3_3b", "Ministral3 3B — Ernie-Image"),
     ("gemma2_2b", "Gemma2 2B — Lumina / PiD"),
@@ -417,7 +419,13 @@ _ENCODER_SHAPES = {
     # Measured from real files in a Forge Neo install.
     (28, 1024, False): ("qwen3_06b", "Qwen3 0.6B — Anima's native text encoder"),
     (36, 2560, False): ("qwen3_4b", "Qwen3 4B — Z-Image, Flux.2-Klein 4B"),
-    (36, 2560, True): ("qwen3vl_4b", "Qwen3-VL 4B — Krea 2"),
+    (36, 2560, True): ("qwen3vl_4b", "Qwen3-VL 4B — Krea 2, FLUX 3, Iris 3B"),
+    # Measured 2026-10-18 from Comfy-Org's bf16, int8 convrot and w4a8 builds.
+    # Qwen3-VL 8B differs from qwen3_8b below only by its vision tower. Every
+    # Qwen3.5 9B seen ships one (FLUX 3's prompt upsampler is one too, with the
+    # same shape; nothing in the header separates it).
+    (36, 4096, True): ("qwen3vl_8b", "Qwen3-VL 8B — Qwen-Image 2.1"),
+    (32, 4096, True): ("qwen35_9b", "Qwen3.5 9B — MOSS-Image"),
     # From the published model configs; no local file to measure against.
     (36, 4096, False): ("qwen3_8b", "Qwen3 8B — Flux.2-Klein 9B"),
     (28, 3584, True): ("qwen25_7b", "Qwen2.5-VL 7B — Qwen-Image"),

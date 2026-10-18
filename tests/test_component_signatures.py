@@ -73,6 +73,33 @@ class QwenFamilyTests(unittest.TestCase):
         self.assertEqual(36, result["layers"])
 
 
+class LargerQwenEncoderTests(unittest.TestCase):
+    """Measured 2026-10-18 from Comfy-Org's bf16, int8 convrot and w4a8 files:
+    Qwen3-VL 8B (Qwen-Image 2.1) is 36 layers at hidden 4096 with a vision
+    tower; Qwen3.5 9B (MOSS-Image) is 32 at 4096, vocab 248320, also with one."""
+
+    def test_qwen3vl_8b(self):
+        self.assertEqual(
+            "qwen3vl_8b", classify(qwen_encoder(36, 4096, vision_blocks=27))["signature_id"]
+        )
+
+    def test_qwen3vl_8b_is_not_offered_as_flux2_klein_9bs_qwen3_8b(self):
+        # Same depth and width; Klein 9B's encoder has no vision tower.
+        self.assertEqual("qwen3_8b", classify(qwen_encoder(36, 4096))["signature_id"])
+        self.assertNotEqual(
+            "qwen3_8b", classify(qwen_encoder(36, 4096, vision_blocks=27))["signature_id"]
+        )
+
+    def test_qwen35_9b_in_its_own_layout(self):
+        result = classify(
+            qwen_encoder(32, 4096, vision_blocks=27, vocab=248320,
+                         language_prefix="model.language_model.", mtp_layers=1)
+        )
+        self.assertEqual("qwen35_9b", result["signature_id"])
+        # The prediction head's single layer does not add to the depth.
+        self.assertEqual(32, result["layers"])
+
+
 class T5FamilyTests(unittest.TestCase):
     """Forge's own discriminator is the vocabulary size."""
 
@@ -143,6 +170,47 @@ class VaeTests(unittest.TestCase):
         ):
             with self.subTest(component=name):
                 self.assertEqual("text_encoder", classify(tensors)["kind"])
+
+
+class VaeFitsLatentFormatTests(unittest.TestCase):
+    """Which autoencoder each latent space is offered. Run against every VAE
+    in the reference library on 2026-10-18: each one matched only its own
+    family, and none that was offered before stopped being offered."""
+
+    VAES = {
+        "flux_ae": vae_2d(latent_channels=16),
+        "flux2_ae": vae_2d(latent_channels=32),
+        "wan_family": vae_3d(latent_channels=16),
+        "qwen_image21": vae_3d(latent_channels=64),
+        "sd": vae_2d(latent_channels=4),
+    }
+    EXPECTED = {
+        "Flux": "flux_ae",
+        # FLUX.2 Klein, ERNIE-Image, and the FLUX 3 and MOSS-Image extensions.
+        "Flux2": "flux2_ae",
+        "Wan21": "wan_family",
+        "QwenImage21": "qwen_image21",
+        "QwenImage21Latent": "qwen_image21",
+        "SDXL": "sd",
+    }
+
+    def test_each_latent_space_accepts_only_its_own_autoencoder(self):
+        from merge_studio.component_registry import vae_fits_latent_format
+
+        for latent, wanted in self.EXPECTED.items():
+            for name, tensors in self.VAES.items():
+                with self.subTest(latent=latent, vae=name):
+                    self.assertEqual(
+                        name == wanted,
+                        vae_fits_latent_format(classify(tensors), latent),
+                    )
+
+    def test_qwen_image_21s_3d_vae_is_not_offered_to_the_wan_family(self):
+        # Krea 2, Anima and Qwen-Image all read Wan21 latents; this VAE is 3D
+        # like theirs but carries 64 channels.
+        from merge_studio.component_registry import vae_fits_latent_format
+
+        self.assertFalse(vae_fits_latent_format(classify(vae_3d(latent_channels=64)), "Wan21"))
 
 
 class StorageTests(unittest.TestCase):

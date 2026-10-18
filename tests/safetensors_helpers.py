@@ -89,18 +89,25 @@ def write_safetensors_header(path, tensors, metadata=None) -> str:
 # where a comment says they come from the model's published config instead.
 
 
-def qwen_encoder(layers, hidden, *, vision_blocks=0, vocab=151936, dtype="BF16"):
+def qwen_encoder(layers, hidden, *, vision_blocks=0, vocab=151936, dtype="BF16",
+                 language_prefix="model.", mtp_layers=0):
     """A Qwen-family causal LM, optionally with a vision tower.
 
     The vision tower is the only structural difference between Krea2's
     ``qwen3vl_4b`` and Z-Image's ``qwen3_4b``: both are 36 layers at hidden
     2560 with the same vocabulary.
+
+    Qwen3.5 files put the LM under ``model.language_model.`` and carry a
+    multi-token-prediction head (``mtp.layers.0``) beside it, as measured on
+    Comfy-Org's qwen3.5_9b builds.
     """
-    tensors = {"model.embed_tokens.weight": (dtype, [vocab, hidden])}
+    tensors = {f"{language_prefix}embed_tokens.weight": (dtype, [vocab, hidden])}
     for i in range(layers):
-        tensors[f"model.layers.{i}.self_attn.q_proj.weight"] = (dtype, [hidden, hidden])
-        tensors[f"model.layers.{i}.mlp.down_proj.weight"] = (dtype, [hidden, hidden])
-        tensors[f"model.layers.{i}.input_layernorm.weight"] = (dtype, [hidden])
+        tensors[f"{language_prefix}layers.{i}.self_attn.q_proj.weight"] = (dtype, [hidden, hidden])
+        tensors[f"{language_prefix}layers.{i}.mlp.down_proj.weight"] = (dtype, [hidden, hidden])
+        tensors[f"{language_prefix}layers.{i}.input_layernorm.weight"] = (dtype, [hidden])
+    for i in range(mtp_layers):
+        tensors[f"mtp.layers.{i}.self_attn.q_proj.weight"] = (dtype, [hidden, hidden])
     for i in range(vision_blocks):
         tensors[f"model.visual.blocks.{i}.attn.qkv.weight"] = (dtype, [3072, 1024])
         tensors[f"model.visual.blocks.{i}.attn.proj.weight"] = (dtype, [1024, 1024])

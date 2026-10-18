@@ -108,6 +108,10 @@ SLOT_POLICIES: dict[str, ComponentSlotPolicy] = {
     # Dimensionally identical to qwen3_4b apart from the vision tower, so it
     # stays a separate role and the signature sets must not overlap.
     "qwen3vl_4b": _encoder("qwen3vl_4b", "Qwen3-VL 4B"),
+    # Same depth and width as qwen3_8b; the vision tower is again the only
+    # difference, so it is a role of its own.
+    "qwen3vl_8b": _encoder("qwen3vl_8b", "Qwen3-VL 8B"),
+    "qwen35_9b": _encoder("qwen35_9b", "Qwen3.5 9B"),
     "qwen25_7b": _encoder("qwen25_7b", "Qwen2.5-VL 7B"),
     "gemma2_2b": _encoder("gemma2_2b", "Gemma2 2B"),
     "ministral3_3b": _encoder("ministral3_3b", "Ministral3 3B"),
@@ -142,12 +146,21 @@ EXPERIMENTAL_FAMILIES = frozenset(
 #: convolution; the Flux AE and the SD/SDXL VAE are 2D and differ only in
 #: latent channel count -- 16 against 4. Latent channels alone do not separate
 #: Flux from Qwen-Image, since both are 16.
+#:
+#: Qwen-Image 2.1's autoencoder is 3D as well, but 64 channels, so the Wan
+#: family now has to name its 16 or that VAE would be offered to Krea 2 and
+#: Anima. The Flux.2 AE measures 32 at `decoder.conv_in`; the 128 Forge declares
+#: for the latent is after a 2x2 patchify.
 VAE_TRAITS_BY_LATENT_FORMAT: dict[str, dict] = {
-    "Wan21": {"video_capable": True},
+    "Wan21": {"video_capable": True, "latent_channels": 16},
     "Flux": {"video_capable": False, "latent_channels": 16},
+    "Flux2": {"video_capable": False, "latent_channels": 32},
     "SDXL": {"video_capable": False, "latent_channels": 4},
     "SD15": {"video_capable": False, "latent_channels": 4},
 }
+# Forge Neo's native name, then the Qwen-Image 2.1 extension's.
+for _qwen21_latent in ("QwenImage21", "QwenImage21Latent"):
+    VAE_TRAITS_BY_LATENT_FORMAT[_qwen21_latent] = {"video_capable": True, "latent_channels": 64}
 
 
 def vae_fits_latent_format(module_info, latent_format_name: str) -> bool:
