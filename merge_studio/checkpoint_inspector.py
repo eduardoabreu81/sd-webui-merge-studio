@@ -346,6 +346,10 @@ _QUANT_FORMAT_LABELS = {
     ("convrot_w4a4", True): "INT4 convrot W4A4",
     ("convrot_w4a4", False): "INT4 W4A4",
     ("asym_w4a8_int8", False): "W4A8 asym INT8",
+    # Comfy-Org's and BFL's W4A8 text encoders write convrot=true in the blob.
+    ("asym_w4a8_int8", True): "W4A8 convrot",
+    ("w6a8_int8", False): "W6A8",
+    ("w6a8_int8", True): "W6A8 convrot",
 }
 
 # Enough layers to notice a checkpoint quantized in more than one format,

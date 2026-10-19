@@ -124,7 +124,9 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 | Build an AIO checkpoint | Any architecture Forge Neo declares components for; verified by reopening |
 | Inspect safetensors metadata | Checkpoints, LoRAs, text encoders, and VAEs |
 
-**Output formats:** FP16, BF16, FP8 e4m3fn, FP8 e5m2, INT8, INT8 ConvRot, NVFP4, INT4 ConvRot W4A4, or same as the source.
+**Output formats:** FP16, BF16, FP8 e4m3fn, FP8 e5m2, MXFP8, INT8, INT8 ConvRot, NVFP4, INT4 ConvRot W4A4, W4A8, W6A8, or same as the source.
+
+When you quantize a Krea 2, Qwen-Image 2.1, FLUX 3, MOSS-Image or Iris 3B model from full precision, Merge Studio converts the same layers the official quantized releases do and leaves the sensitive ones (inputs, outputs, timing and text layers) at full precision. FLUX 3, MOSS-Image and Iris 3B need their Forge Neo extensions installed.
 
 **Not supported:** GGUF, Nunchaku / SVDQuant, NF4 and legacy bitsandbytes storage, and SD2 / SD3 — none of which Forge Neo's current model loader handles.
 

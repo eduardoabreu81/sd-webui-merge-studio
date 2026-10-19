@@ -20,6 +20,8 @@ import backend.args
 from backend.operations_mixed_precision import _quantized_weight_state_dict
 from backend.quant_ops import QUANT_ALGOS, QuantizedTensor
 
+from .quant_profiles import profile_for
+
 PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16}
 
 # Anima's LLMAdapter is a submodule of the text encoder at runtime (loader.py
@@ -67,7 +69,17 @@ def debug_print(msg: str) -> None:
 QUANT_FORMAT_VARIANTS: dict[str, tuple[str, dict]] = {
     "int8_tensorwise": ("int8_tensorwise", {}),
     "int8_tensorwise_convrot": ("int8_tensorwise", {"per_channel": True, "convrot": True, "convrot_groupsize": 256}),
+    # Both QUANT_ALGOS entries build comfy-kitchen's AsymW4A8Int8Layout, which
+    # always applies ConvRot; the bit depth is its `bits` argument (4 by
+    # default). Listed here so a W6A8 layer re-quantized in its own format,
+    # as a merge does, stays 6-bit instead of falling to the default.
+    "asym_w4a8_int8": ("asym_w4a8_int8", {}),
+    "w6a8_int8": ("w6a8_int8", {"bits": 6}),
 }
+
+# Formats whose layout rotates in groups along the input width and refuses a
+# width no group size divides (comfy_kitchen/tensor/w4a8_int8.py).
+_GROUPED_INT_FORMATS = frozenset({"asym_w4a8_int8", "w6a8_int8"})
 
 # (label, output_format key) pairs shared by every UI tab that offers an
 # output-format choice.
@@ -80,7 +92,10 @@ OUTPUT_FORMAT_CHOICES = [
     ("INT8 (tensor-wise, single scale)", "int8_tensorwise"),
     ("INT8 (convrot: per-channel + rotation, recommended)", "int8_tensorwise_convrot"),
     ("NVFP4", "nvfp4"),
+    ("MXFP8", "mxfp8"),
     ("INT4 (convrot W4A4)", "convrot_w4a4"),
+    ("W4A8 (convrot, 4-bit weights)", "asym_w4a8_int8"),
+    ("W6A8 (convrot, 6-bit weights)", "w6a8_int8"),
 ]
 
 # Reference heuristic from comfy-kitchen's own sample
@@ -165,7 +180,11 @@ def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_form
     actual_format, extra_kwargs = _resolve_quant_format(target_format)
     layout_name = QUANT_ALGOS[actual_format]["comfy_tensor_layout"]
     layer_kwargs = dict(extra_kwargs)
-    if layer_kwargs.get("convrot"):
+    if actual_format in _GROUPED_INT_FORMATS:
+        group = _rotation_group(float_weight.shape[1] if float_weight.dim() >= 2 else 0)
+        if group is not None:
+            layer_kwargs["convrot_groupsize"] = group
+    elif layer_kwargs.get("convrot"):
         in_f = float_weight.shape[1] if hasattr(float_weight, "dim") and float_weight.dim() >= 2 else 0
         if in_f > 0:
             if in_f % 256 == 0:
@@ -208,6 +227,58 @@ def iter_quantizable_linears(root_module: nn.Module, min_features: int = DEFAULT
         yield name, module
 
 
+def _fresh_targets(root_module: nn.Module, output_format: str) -> list[tuple[str, nn.Module]]:
+    """Layers to convert when the source has no quantization to mirror.
+
+    An architecture with a measured profile (quant_profiles.py) converts what
+    its official builds convert; the name heuristic would also take inputs,
+    outputs and embedders those builds keep. With a profile the allowlist
+    decides, so only norms are still skipped by name -- Iris 3B's text adapter
+    is `y_embedder`, which "embed" would otherwise exclude. A plain fp16/bf16
+    target converts everything, as before.
+    """
+    profile = None
+    if output_format not in PLAIN_FORMATS:
+        profile = profile_for(name for name, _ in root_module.named_modules())
+    if profile is None:
+        targets = list(iter_quantizable_linears(root_module))
+    else:
+        targets = [
+            (name, module)
+            for name, module in iter_quantizable_linears(root_module, skip_substrings=("norm",))
+            if profile.selects(name, output_format)
+        ]
+        debug_print(f"Using the {profile.name} quantization profile for '{output_format}' ({len(targets)} layers).")
+
+    # The W4A8 / W6A8 layout rotates every row in groups and refuses a width
+    # no group size divides; such a layer stays at full precision.
+    if _resolve_quant_format_name(output_format) in _GROUPED_INT_FORMATS:
+        kept = [(n, m) for n, m in targets if _rotation_group(_in_features(m)) is None]
+        if kept:
+            debug_print(f"Keeping {len(kept)} layer(s) at full precision: input width not divisible by 64.")
+            targets = [t for t in targets if t not in kept]
+    return targets
+
+
+def _in_features(module: nn.Module) -> int:
+    w = getattr(module, "weight", None)
+    raw = w._qdata if isinstance(w, QuantizedTensor) else w
+    return int(raw.shape[1]) if hasattr(raw, "dim") and raw.dim() >= 2 else 0
+
+
+def _rotation_group(in_features: int) -> int | None:
+    for size in (256, 128, 64):
+        if in_features and in_features % size == 0:
+            return size
+    return None
+
+
+def _resolve_quant_format_name(output_format: str) -> str:
+    if output_format in QUANT_FORMAT_VARIANTS:
+        return QUANT_FORMAT_VARIANTS[output_format][0]
+    return output_format
+
+
 def convert_module_tree_precision(
     root_module: nn.Module,
     output_format: str,
@@ -241,7 +312,7 @@ def convert_module_tree_precision(
     back to a plain float tensor instead of erroring, so the bug is
     invisible until you inspect the actual output file's dtypes."""
     already_quantized = [(n, m) for n, m in root_module.named_modules() if is_quantized(m)]
-    targets = already_quantized if already_quantized else list(iter_quantizable_linears(root_module))
+    targets = already_quantized if already_quantized else _fresh_targets(root_module, output_format)
     if skip_names:
         # Applied after selection so it covers both branches above.
         targets = [(n, m) for n, m in targets if not any(s in n for s in skip_names)]
