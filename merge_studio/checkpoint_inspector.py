@@ -326,6 +326,7 @@ def get_model_family(arch: str) -> str:
         ("pid", "pid"),
         ("moss-image", "moss"),
         ("iris 3b", "iris"),
+        ("fibo 2", "fibo2"),
     ):
         if fragment in arch_lower:
             return family

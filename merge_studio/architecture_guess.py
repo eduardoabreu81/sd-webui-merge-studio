@@ -162,6 +162,7 @@ _DETECTOR_LABELS = {
     "Flux3": "FLUX 3 Klein (DiT)",
     "MossImage": "MOSS-Image (DiT)",
     "Iris": "Iris 3B (DiT)",
+    "Fibo2": "FIBO 2 (DiT)",
 }
 
 # Labels that name a fine-tune rather than an architecture. The detector cannot

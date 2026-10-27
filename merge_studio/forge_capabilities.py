@@ -49,10 +49,12 @@ KNOWN_FAMILIES = frozenset(
         "ernie",
         "pid",
         "qwen_image21",
+        # Native since Forge be6fa5d4, and still registered by its extension.
+        "moss_image",
         # Added by extensions, not by Forge Neo itself.
         "flux3",
-        "moss_image",
         "iris",
+        "fibo2",
     }
 )
 

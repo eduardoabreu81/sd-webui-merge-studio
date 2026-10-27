@@ -196,7 +196,7 @@ class DisplayLabelTests(unittest.TestCase):
     def test_families_that_must_not_be_confused_stay_apart(self):
         distinct = ("SD15", "SDXL", "Flux", "Anima", "ZImage", "ErnieImage",
                     "Krea2", "QwenImage", "WAN21_T2V", "Chroma",
-                    "QwenImage21", "Flux3", "MossImage", "Iris")
+                    "QwenImage21", "Flux3", "MossImage", "Iris", "Fibo2")
         families = {
             name: get_model_family(ag._DETECTOR_LABELS[name]) for name in distinct
         }

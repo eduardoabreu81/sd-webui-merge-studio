@@ -130,9 +130,9 @@ SUPPORTED_FAMILIES = frozenset(
     {"flux", "flux2", "anima", "krea2", "lumina2", "wan2.1", "qwen_image"}
 )
 # The newer ones stay experimental until a composition has been saved and
-# reloaded end to end; FLUX 3 and Iris 3B load through extensions.
+# reloaded end to end; FLUX 3, Iris 3B and FIBO 2 load through extensions.
 EXPERIMENTAL_FAMILIES = frozenset(
-    {"chroma", "ernie", "qwen_image21", "flux3", "moss_image", "iris"}
+    {"chroma", "ernie", "qwen_image21", "flux3", "moss_image", "iris", "fibo2"}
 )
 
 
