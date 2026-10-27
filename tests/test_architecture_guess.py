@@ -214,6 +214,14 @@ class DisplayLabelTests(unittest.TestCase):
                     get_model_family(ag._DETECTOR_LABELS[old]),
                 )
 
+    def test_native_and_extension_moss_share_a_family(self):
+        # Forge gained MOSS-Image natively as `MOSSImage`, ahead of the
+        # extension's `MossImage` in the model list. Either name is the same
+        # model, and a missing one fell back to "Diffusion Model".
+        self.assertEqual(
+            ag._DETECTOR_LABELS["MOSSImage"], ag._DETECTOR_LABELS["MossImage"]
+        )
+
     def test_the_two_wan_variants_share_a_family(self):
         # Same architecture, different conditioning. Splitting them would put a
         # false incompatibility warning in front of a merge that works.

@@ -3,7 +3,7 @@
 `backend/loader.py` calls `huggingface_guess.guess(state_dict)` to decide which
 diffusion engine to build, so that package -- vendored at
 `modules_forge/packages/huggingface_guess/` and importable by plain name inside
-Forge -- is the authority on what a file is. It knows nineteen architectures by
+Forge -- is the authority on what a file is. It knows twenty architectures by
 their official repo names (more when extensions register their own), where the pattern-matching in
 `checkpoint_inspector._detect_architecture` knows six families and calls
 everything else "Diffusion Model".
@@ -151,6 +151,9 @@ _DETECTOR_LABELS = {
     "WAN21_I2V": "Wan2.1 I2V (DiT)",
     "QwenImage": "Qwen-Image (MMDiT)",
     "QwenImage21": "Qwen-Image 2.1 (MMDiT)",
+    # Native since Forge be6fa5d4. It precedes the extension's `MossImage` in
+    # the model list, so a Forge with both installed answers with this name.
+    "MOSSImage": "MOSS-Image (DiT)",
     "Krea2": "Krea 2 (DiT)",
     "ErnieImage": "ERNIE-Image (DiT)",
     "PiD": "PiD (DiT)",
