@@ -135,13 +135,14 @@ Merge Studio recognizes these models, keeps them apart from older families with 
 | **Krea 2** | Forge Neo |
 | **Qwen-Image 2.1** | Forge Neo, or the [Qwen-Image 2.1 extension](https://github.com/eduardoabreu81/qwen2.1-forge-neo) |
 | **FLUX 3 Klein** | The [FLUX 3 extension](https://github.com/eduardoabreu81/flux3-image-forge-neo) |
-| **MOSS-Image** | The [MOSS-Image extension](https://github.com/eduardoabreu81/moss-image-forge-neo) |
+| **MOSS-Image** | Forge Neo, or the [MOSS-Image extension](https://github.com/eduardoabreu81/moss-image-forge-neo) |
 | **Iris 3B** | The [Iris 3B extension](https://github.com/eduardoabreu81/iris-3b-forge-neo) |
+| **FIBO 2** | The [FIBO 2 extension](https://github.com/eduardoabreu81/fibo2-forge-neo) |
 
 When you quantize one of them from full precision, Merge Studio converts the same layers the official quantized releases do and leaves the sensitive ones (inputs, outputs, timing and text layers) at full precision. A model that is already quantized keeps its own layout.
 
 > [!NOTE]
-> Building an AIO checkpoint for Qwen-Image 2.1, FLUX 3, MOSS-Image or Iris 3B is still marked experimental.
+> Building an AIO checkpoint for Qwen-Image 2.1, FLUX 3, MOSS-Image, Iris 3B or FIBO 2 is still marked experimental.
 
 **Not supported:** GGUF, Nunchaku / SVDQuant, NF4 and legacy bitsandbytes storage, and SD2 / SD3 — none of which Forge Neo's current model loader handles.
 
