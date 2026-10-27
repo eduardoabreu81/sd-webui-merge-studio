@@ -58,12 +58,19 @@ IRIS_ADAPTER = ["y_embedder.layer_blocks.0.attn.qkv", "y_embedder.refiner.blocks
 IRIS_KEEP = ["final_layer.linear", "s_embedder.proj", "t_embedder.mlp.0", "pixel_embedder.proj",
              "modulation_cores.adaln_img", "y_embedder.layer_pool"]
 
+FIBO2_QUANT = ["layers.0.attention.qkv", "layers.43.feed_forward.w2", "layers.10.cross_attention.to_kv",
+               "noise_refiner.1.attention.out", "perceiver.layers.0.self_attention.to_q",
+               "perceiver.layers.1.ffn.w13"]
+FIBO2_KEEP = ["layers.0.adaLN_modulation.0", "noise_refiner.0.adaLN_modulation.0",
+              "final_layer.linear", "final_layer.adaLN_modulation.1", "t_embedder.mlp.0", "x_embedder"]
+
 MODELS = {
     "krea2": KREA2_BLOCKS + KREA2_TEXT_FUSION + KREA2_KEEP,
     "qwen_image21": QWEN21_QUANT + QWEN21_KEEP + ["txt_in.text_norm"],
     "flux3": FLUX3_CONTENT + FLUX3_TEXT + FLUX3_KEEP,
     "moss_image": MOSS_QUANT + MOSS_KEEP,
     "iris": IRIS_BLOCKS + IRIS_PIXEL + IRIS_PIXEL_MLP + IRIS_ADAPTER + IRIS_KEEP,
+    "fibo2": FIBO2_QUANT + FIBO2_KEEP,
 }
 
 # (model, output format, quantized in the official build, kept there)
@@ -81,6 +88,8 @@ OFFICIAL_BUILDS = [
      IRIS_PIXEL_MLP + IRIS_ADAPTER + IRIS_KEEP),
     ("iris", "asym_w4a8_int8", IRIS_BLOCKS + IRIS_ADAPTER,
      IRIS_PIXEL + IRIS_PIXEL_MLP + IRIS_KEEP),
+    # Measured 2026-10-27 on fibo2_dev and fibo2_edit_turbo, which agree.
+    ("fibo2", "int8_tensorwise_convrot", FIBO2_QUANT, FIBO2_KEEP),
 ]
 
 
@@ -123,8 +132,11 @@ class IdentityTests(unittest.TestCase):
                        "txt_in", "img_in", "proj_out", "time_text_embed.timestep_embedder.linear_1"],
         "flux1": ["double_blocks.0.img_attn.qkv", "single_blocks.0.linear1", "txt_in", "img_in",
                   "time_in.in_layer", "final_layer.linear"],
+        # Shares layers, noise_refiner and final_layer with FIBO 2; only the
+        # perceiver tells them apart.
         "zimage": ["layers.0.attention.qkv", "context_refiner.0.attention.qkv",
-                   "noise_refiner.0.feed_forward.w1", "cap_embedder.1", "x_embedder"],
+                   "noise_refiner.0.feed_forward.w1", "cap_embedder.1", "x_embedder",
+                   "final_layer.linear"],
         "qwen3vl_text_encoder": ["model.layers.0.self_attn.q_proj", "model.visual.blocks.0.attn.qkv",
                                  "model.embed_tokens"],
         "wan_vae": ["decoder.conv1", "encoder.downsamples.0.residual.0", "conv2"],

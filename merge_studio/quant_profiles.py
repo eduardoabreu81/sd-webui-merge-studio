@@ -124,6 +124,17 @@ PROFILES: tuple[QuantProfile, ...] = (
         },
         keep=(r"^pixel_blocks\.\d+\.mlp\.", r"^y_embedder\.layer_pool$"),
     ),
+    QuantProfile(
+        # The dev and edit-turbo INT8 ConvRot builds agree: every projection
+        # of the 44 layers, the noise refiner and the perceiver. Each block's
+        # `adaLN_modulation`, `final_layer`, `t_embedder` and `x_embedder`
+        # stay; the name heuristic would have converted `final_layer.linear`.
+        # Measured 2026-10-27.
+        name="fibo2",
+        marks=("perceiver", "noise_refiner", "final_layer", "layers"),
+        quantize=("layers.", "noise_refiner.", "perceiver.layers."),
+        keep=(r"\.adaLN_modulation\.",),
+    ),
 )
 
 
