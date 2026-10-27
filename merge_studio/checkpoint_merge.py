@@ -50,7 +50,7 @@ from . import anima_remap
 from . import elemental_weights
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
-from .source_precision import apply_component_precision, try_match_source_dtypes
+from .source_precision import apply_component_precision, source_precision_keys, try_match_source_dtypes
 from .merge_modes import (
     INTERP_NO_INTERPOLATION,
     MergeError,
@@ -1069,13 +1069,11 @@ def merge_checkpoints(
             pattern = re.compile(discard_regex)
             sd = {k: v for k, v in sd.items() if not pattern.search(k)}
 
-        same_source_keys: set[str] = set()
-        if output_format == "same":
-            same_source_keys.update(unet_output_keys)
-        if save_mode == "full" and clip_output_format == "same":
-            same_source_keys.update(clip_output_keys)
-        if save_mode == "full" and not is_custom_vae and vae_output_format == "same":
-            same_source_keys.update(vae_output_keys)
+        same_source_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
+        if save_mode == "full":
+            same_source_keys.update(source_precision_keys(clip_output_format, clip_output_keys, sd, PLAIN_FORMATS))
+        if save_mode == "full" and not is_custom_vae:
+            same_source_keys.update(source_precision_keys(vae_output_format, vae_output_keys, sd, PLAIN_FORMATS))
         if same_source_keys:
             restored, precision_warning = try_match_source_dtypes(
                 sd, primary_info.filename, same_source_keys, SAFETENSORS_FLOAT_DTYPES

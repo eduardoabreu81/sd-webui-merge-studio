@@ -32,6 +32,7 @@ KEY_PREFIX_GROUPS = (
     ("model.diffusion_model.", "net."),
     ("vae.", "first_stage_model."),
 )
+_DIFFUSION_COMPONENT = 0
 
 
 def _grouped_key(key: str) -> tuple[int, str] | None:
@@ -53,15 +54,28 @@ def _index_by_grouped_key(header: Mapping[str, Any]) -> dict[tuple[int, str], An
     A name that two source keys in the same component both reduce to is dropped
     rather than guessed at: without the prefix there is nothing left to tell
     them apart, and casting the wrong tensor is worse than casting none.
+
+    A standalone diffusion-model file carries no prefix at all: MOSS-Image's
+    official int8_convrot build stores ``layers.0.norm1.weight``, which the
+    save path writes back as ``model.diffusion_model.layers.0.norm1.weight``.
+    Bare keys are read as the diffusion model only when the whole header is
+    bare. In a file that mixes them with prefixed keys, nothing says which
+    component a bare key belongs to.
     """
+    entries = [
+        (key, info)
+        for key, info in header.items()
+        if key != "__metadata__" and isinstance(info, dict)
+    ]
+    bare_diffusion_file = not any(_grouped_key(key) for key, _ in entries)
     index: dict[tuple[int, str], Any] = {}
     ambiguous: set[tuple[int, str]] = set()
-    for key, info in header.items():
-        if key == "__metadata__" or not isinstance(info, dict):
-            continue
+    for key, info in entries:
         grouped = _grouped_key(key)
         if grouped is None:
-            continue
+            if not bare_diffusion_file:
+                continue
+            grouped = (_DIFFUSION_COMPONENT, key)
         if grouped in index:
             ambiguous.add(grouped)
         index[grouped] = info
@@ -197,6 +211,38 @@ def apply_component_precision(
         state_dict[key] = state_dict[key].to(target)
         changed += 1
     return changed
+
+
+def source_precision_keys(
+    output_format: str,
+    keys: Iterable[str],
+    state_dict: Mapping[str, Any],
+    plain_formats: Iterable[str],
+) -> set[str]:
+    """Which of one component's output keys take the source checkpoint's dtype.
+
+    ``same`` restores them all. A plain format (fp16/bf16) is an explicit
+    dtype for the whole component and restores none. A quantized format only
+    converts the layers it quantizes, so everything else (norms, embedders,
+    modulation, biases of untouched layers) keeps the dtype the source
+    recorded, not the one Forge happened to materialise at load. Without this
+    the MOSS-Image int8_convrot base came back with every BF16 tensor in F32,
+    0.6 GB larger for nothing.
+
+    A quantized layer is recognised by the ``comfy_quant`` tensor Forge writes
+    for each one, and all of its keys stay out: an FP8 payload is a floating
+    dtype too, and casting it back to the source's BF16 would undo the
+    quantization.
+    """
+    keys = set(keys)
+    if output_format == "same":
+        return keys
+    if output_format in set(plain_formats):
+        return set()
+    quantized_layers = tuple(
+        key[: -len("comfy_quant")] for key in state_dict if key.endswith(".comfy_quant")
+    )
+    return {key for key in keys if not key.startswith(quantized_layers)}
 
 
 def match_source_dtypes(

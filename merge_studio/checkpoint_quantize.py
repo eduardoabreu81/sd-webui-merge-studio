@@ -15,7 +15,8 @@ from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import shared
 
-from .quant_utils import convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from .quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
+from .source_precision import source_precision_keys, try_match_source_dtypes
 
 
 class QuantizeError(RuntimeError):
@@ -72,6 +73,7 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
 
         sd = {}
         sd.update(engine.model_config.process_unet_state_dict_for_saving(unet_sd))
+        unet_output_keys = set(sd)
         if save_mode == "full":
             sd.update(engine.model_config.process_clip_state_dict_for_saving(utils.get_state_dict_after_quant(engine.forge_objects.clip.cond_stage_model)))
             sd.update(engine.model_config.process_vae_state_dict_for_saving(utils.get_state_dict_after_quant(engine.forge_objects.vae.first_stage_model)))
@@ -84,6 +86,17 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
                 if "llm_adapter" in k:
                     suffix = k[k.index("llm_adapter") :]
                     sd[f"model.diffusion_model.{suffix}"] = v
+                    unet_output_keys.add(f"model.diffusion_model.{suffix}")
+
+        # CLIP and VAE are documented as untouched here, so they take the
+        # source's precision like everything the quantization left alone.
+        restore_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
+        restore_keys.update(set(sd) - unet_output_keys)
+        restored, precision_warning = try_match_source_dtypes(sd, checkpoint_path, restore_keys, SAFETENSORS_FLOAT_DTYPES)
+        if progress_cb and restored:
+            progress_cb(f"Restored source precision for {restored} tensor(s).")
+        if progress_cb and precision_warning:
+            progress_cb(precision_warning)
         sd = to_cpu_contiguous_state_dict(sd)
 
         # `sd` now holds independent CPU copies of everything we need --
