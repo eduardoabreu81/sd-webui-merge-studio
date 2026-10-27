@@ -200,6 +200,49 @@ class DeltaWriteTests(unittest.TestCase):
         )
 
 
+class DeltaFloorByModeTests(unittest.TestCase):
+    """Which floor the delta subtracts depends on what the mode subtracts.
+
+    Weighted Sum has one donor, and A's own merged stem is the only floor on
+    offer. Add Difference already names the floor: Model C, the base that B
+    was trained from. Measuring B against A's merged stem there gives
+    `(1 - M)(B - C) - (A - C)`, which is the change B made MINUS the
+    finetune A made. With a turbo checkpoint as B and its base as C, the
+    inserts lost A's whole finetune and got back towards the base.
+    """
+
+    def test_the_difference_modes_measure_from_model_c(self):
+        from merge_studio.merge_modes import merge_mode
+
+        for key in ("add_difference", "similarity_add_difference"):
+            self.assertTrue(merge_mode(key).delta_from_c, key)
+
+    def test_the_other_modes_keep_the_merged_stem_floor(self):
+        from merge_studio.merge_modes import merge_mode
+
+        for key in ("weighted_sum", "sum_twice", "dare", "no_interpolation"):
+            self.assertFalse(merge_mode(key).delta_from_c, key)
+
+    def test_an_add_difference_insert_moves_as_far_as_its_stem(self):
+        # A finetuned A (-2 from base on this floor), a turbo B (+1 over C).
+        a_kept, a_insert, b_src, c_src, m = Num(10), Num(11), Num(13), Num(12), 0.5
+        stem = a_kept + m * (b_src - c_src)
+
+        insert = delta_write(a_insert, b_src, c_src, m)
+
+        self.assertAlmostEqual(stem.value - a_kept.value, insert.value - a_insert.value)
+
+    def test_the_merged_stem_floor_would_undo_model_a(self):
+        # Pins the failure this replaces: +1.25, not +0.5, of which 1.0 is A's
+        # own finetune subtracted back out.
+        a_kept, a_insert, b_src, c_src, m = Num(10), Num(11), Num(13), Num(12), 0.5
+        stem = a_kept + m * (b_src - c_src)
+
+        insert = delta_write(a_insert, b_src, stem, m)
+
+        self.assertAlmostEqual(1.25, insert.value - a_insert.value)
+
+
 class ExtendRuleNameTests(unittest.TestCase):
     def test_blend_stays_the_default(self):
         # Every recipe saved before this existed merged with the lerp, and

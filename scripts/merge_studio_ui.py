@@ -1572,7 +1572,10 @@ def create_merge_studio_tab():
                         "block it was copied from — both are real layers, but they sit at different depths, so the "
                         "result is an average of two checkpoints inside one block. Delta writes "
                         "insert + ratio × (donor − kept) instead: only the direction Model B moved away from the "
-                        "block Model A inherited alongside this one, never B's absolute weights. Delta is the rule "
+                        "block Model A inherited alongside this one, never B's absolute weights. In Add Difference "
+                        "modes the floor is Model C instead: insert + ratio × (B − C), the same change the shared "
+                        "blocks get, so a ratio equal to the Multiplier moves the inserts as far as the rest. Under "
+                        "Weighted Sum the matching ratio is Multiplier / (1 − Multiplier). Delta is the rule "
                         "the ComfyUI Anima Delta Mix node pack uses; Blend is what this extension has always done."
                     ),
                 )

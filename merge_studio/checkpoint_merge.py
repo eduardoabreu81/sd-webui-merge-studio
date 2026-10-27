@@ -460,10 +460,11 @@ def _merge_module_tree(
 
     -- the donor's own displacement from the floor it shares an origin with,
     never an average of two checkpoints inside one block. `kept_name` gives
-    the A-side floor; see `anima_remap.make_kept_translator`. The delta rule
-    is defined against a single donor, so it ignores Model C even in the
-    three-model modes: the stem still merges on the mode's own terms, and only
-    the inserts take the delta.
+    the A-side floor; see `anima_remap.make_kept_translator`. In the modes
+    that subtract Model C (`MergeMode.delta_from_c`), the floor is C's block
+    instead, `insert += extend_ratio * (B - C)`: C is the base B was trained
+    from, and A's merged stem there would subtract A's own finetune. Sum Twice
+    keeps the A-side floor, because its C is a third blend, not a base.
 
     beta: the second ratio, for the modes that have one. Ignored by the rest.
 
@@ -509,10 +510,15 @@ def _merge_module_tree(
         # in the block it was copied from instead of leaving it at A's weights.
         effective_multiplier = multiplier
         delta_kept = None
+        # Delta measured from Model C's block rather than A's stem: see
+        # `MergeMode.delta_from_c`. C is fetched below like any other module.
+        delta_from_c = False
         if lookup is None and extend_name is not None and extend_ratio > 0.0:
             lookup = extend_name(name)
             effective_multiplier = extend_ratio
-            if extend_rule == anima_remap.EXTEND_RULE_DELTA:
+            if extend_rule == anima_remap.EXTEND_RULE_DELTA and mode.delta_from_c:
+                delta_from_c = True
+            elif extend_rule == anima_remap.EXTEND_RULE_DELTA:
                 kept = kept_name(name) if kept_name is not None else None
                 delta_kept = named_a.get(kept) if kept is not None else None
                 if delta_kept is None:
@@ -562,8 +568,9 @@ def _merge_module_tree(
             if w_c.device != dev:
                 w_c = w_c.to(device=dev)
 
-        if delta_kept is not None:
-            merged = _delta_write(w_a, w_b, weight_as_float(delta_kept), effective_multiplier, dev)
+        if delta_kept is not None or delta_from_c:
+            floor = w_c if delta_from_c else weight_as_float(delta_kept)
+            merged = _delta_write(w_a, w_b, floor, effective_multiplier, dev)
             if merged is None:
                 skipped.append(name)
                 del w_a, w_b
@@ -601,7 +608,9 @@ def _merge_module_tree(
                 # A module whose weight merged but whose bias has no
                 # counterpart in C leaves the bias alone rather than blending
                 # it on different terms from the weight beside it.
-                if delta_kept is not None:
+                if delta_from_c:
+                    new_bias = _delta_write(b_a, b_b_f, b_c_f, effective_multiplier, dev)
+                elif delta_kept is not None:
                     kept_bias = getattr(delta_kept, "bias", None)
                     new_bias = _delta_write(
                         b_a, b_b_f,

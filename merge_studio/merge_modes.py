@@ -58,6 +58,12 @@ class MergeMode:
     #: repeated makes the recipe a lie, so the modes that do get a seed and
     #: record it.
     needs_seed: bool = False
+    #: Whether the Delta rule for Anima's inserted blocks measures Model B from
+    #: Model C rather than from A's merged stem. True for the modes whose
+    #: formula subtracts C: there C is the base B was trained from, and
+    #: measuring B against A's stem instead would subtract A's own finetune
+    #: (see `delta_write`).
+    delta_from_c: bool = False
 
 
 MERGE_MODES: tuple[MergeMode, ...] = (
@@ -91,6 +97,7 @@ MERGE_MODES: tuple[MergeMode, ...] = (
         needs_b=True,
         needs_c=True,
         needs_beta=False,
+        delta_from_c=True,
     ),
     MergeMode(
         key=INTERP_SUM_TWICE,
@@ -119,6 +126,7 @@ MERGE_MODES: tuple[MergeMode, ...] = (
         needs_c=True,
         needs_beta=True,
         beta_label="Similarity pull (β) — how much agreement softens the add",
+        delta_from_c=True,
     ),
     MergeMode(
         key=INTERP_DARE,
@@ -229,6 +237,15 @@ def delta_write(w_a, w_b, w_kept, ratio: float):
     of Model A that shares this insert's origin -- leaves only the direction
     the donor moved during its own finetune, which is a quantity the two
     models do agree on.
+
+    Which floor `kept` is depends on the mode (`MergeMode.delta_from_c`). With
+    one donor it is A's own merged stem block. In a mode that subtracts Model
+    C it is C's block: C is the base B was trained from, and measuring B
+    against A's merged stem instead gives `(1 - M)(B - C) - (A - C)`, the
+    change B made minus the finetune A made. With C as the floor, `r = M`
+    moves each insert exactly as far as its stem. Under Weighted Sum the
+    stem has already moved `M` towards B, so the insert moves `r(1 - M)`, and
+    `r = M / (1 - M)` is what matches.
 
     `None` back means there is no floor of the matching shape to subtract, and
     the caller leaves the block at A's weights. A missing floor is not a zero
