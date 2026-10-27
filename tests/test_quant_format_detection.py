@@ -110,5 +110,91 @@ class QuantFormatDetectionTests(unittest.TestCase):
         self.assertEqual("BF16", self._precision(None))
 
 
+W4A4 = {"format": "convrot_w4a4", "convrot_groupsize": 256, "quant_group_size": 64}
+
+
+def write_declared_checkpoint(
+    path: Path, declared: dict | None, blobs: dict[str, dict] | None = None, raw: str | None = None
+) -> None:
+    """Integer weights next to a BF16 norm, with the formats declared in
+    `__metadata__._quantization_metadata` instead of (or as well as) blobs.
+
+    Shaped after krea2TurboNSFWV10: 256 layers declared as convrot_w4a4, no
+    comfy_quant tensor at all, names without the model prefix -- and read by
+    this inspector as BF16, which is what its norms are stored in.
+    """
+    header: dict = {}
+    payloads: list[bytes] = []
+    offset = 0
+
+    def add(name: str, dtype: str, payload: bytes, shape: list[int]) -> None:
+        nonlocal offset
+        header[name] = {"dtype": dtype, "shape": shape, "data_offsets": [offset, offset + len(payload)]}
+        payloads.append(payload)
+        offset += len(payload)
+
+    add("blocks.0.norm.weight", "BF16", b"\0" * 4, [2])
+    for layer in ("blocks.0.attn.gate", "blocks.1.attn.gate"):
+        add(f"{layer}.weight", "I8", b"\0" * 4, [2, 2])
+        add(f"{layer}.weight_scale", "F32", b"\0" * 4, [1])
+        if blobs and layer in blobs:
+            encoded = json.dumps(blobs[layer]).encode("utf-8")
+            add(f"{layer}.comfy_quant", "U8", encoded, [len(encoded)])
+    if raw is not None:
+        header["__metadata__"] = {"_quantization_metadata": raw}
+    elif declared is not None:
+        header["__metadata__"] = {"_quantization_metadata": json.dumps({"format_version": "1.0", "layers": declared})}
+
+    encoded_header = json.dumps(header).encode("utf-8")
+    path.write_bytes(struct.pack("<Q", len(encoded_header)) + encoded_header + b"".join(payloads))
+
+
+class DeclaredQuantFormatTests(unittest.TestCase):
+    """Formats stated in the metadata are formats, the way Forge reads them."""
+
+    def _precision(self, declared, blobs=None, raw=None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "model.safetensors"
+            write_declared_checkpoint(path, declared, blobs, raw)
+            return inspect_checkpoint(str(path)).get("precision")
+
+    def test_a_declared_only_build_is_not_called_bf16(self):
+        declared = {"blocks.0.attn.gate": W4A4, "blocks.1.attn.gate": W4A4}
+
+        self.assertEqual("INT4 W4A4 (quantization metadata)", self._precision(declared))
+
+    def test_prefixed_declarations_are_read_too(self):
+        # moodyMossMix names its layers with the model prefix.
+        declared = {f"model.diffusion_model.blocks.{i}.attn.gate": CONVROT for i in (0, 1)}
+
+        self.assertEqual("INT8 convrot (quantization metadata)", self._precision(declared))
+
+    def test_the_declaration_wins_over_the_blob_it_replaces(self):
+        # Forge writes the declared config over the file's own blob.
+        declared = {"blocks.0.attn.gate": CONVROT, "blocks.1.attn.gate": CONVROT}
+        blobs = {"blocks.0.attn.gate": TENSORWISE, "blocks.1.attn.gate": TENSORWISE}
+
+        self.assertEqual("INT8 convrot (comfy_quant)", self._precision(declared, blobs))
+
+    def test_blobs_the_declaration_leaves_out_still_count(self):
+        declared = {"blocks.0.attn.gate": {"format": "nvfp4"}}
+        blobs = {"blocks.1.attn.gate": CONVROT}
+
+        precision = self._precision(declared, blobs)
+
+        self.assertEqual("Mixed: INT8 convrot, NVFP4 (comfy_quant)", precision)
+
+    def test_unreadable_metadata_falls_back_to_the_dtypes(self):
+        self.assertEqual("BF16", self._precision(None, raw="{not json"))
+
+    def test_the_header_alone_is_enough(self):
+        # Component inspectors pass no file path; the declaration needs none.
+        from merge_studio.checkpoint_inspector import _detect_precision
+
+        header = {"__metadata__": {"_quantization_metadata": json.dumps({"layers": {"a": W4A4}})}}
+
+        self.assertEqual("INT4 W4A4 (quantization metadata)", _detect_precision(header))
+
+
 if __name__ == "__main__":
     unittest.main()

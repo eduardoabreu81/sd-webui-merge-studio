@@ -357,8 +357,44 @@ _QUANT_FORMAT_LABELS = {
 _QUANT_SAMPLE_LAYERS = 24
 
 
+def _declared_quant_layers(header: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Layer configs the file declares in ``__metadata__._quantization_metadata``.
+
+    Some builds carry no ``comfy_quant`` tensors at all and state each layer's
+    format there instead: Krea 2 INT4 W4A4 builds and the MOSS-Image Turbo merges
+    do. Forge reads it on load (backend/state_dict.py::convert_quantization)
+    and writes a ``comfy_quant`` for every layer it names, over any the file
+    already had. So for those layers the declaration is the config, and without
+    it such a file reads as plain BF16, its unquantized layers' dtype.
+
+    The layer names may or may not carry the model prefix; Forge works the
+    prefix out itself, which is why they are matched by suffix below.
+    """
+    metadata = header.get("__metadata__")
+    if not isinstance(metadata, dict):
+        return {}
+    raw = metadata.get("_quantization_metadata")
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return {}
+    layers = parsed.get("layers") if isinstance(parsed, dict) else None
+    if not isinstance(layers, dict):
+        return {}
+    return {name: conf for name, conf in layers.items() if isinstance(conf, dict)}
+
+
+def _is_declared(layer: str, declared: dict[str, dict[str, Any]]) -> bool:
+    return any(layer == name or layer.endswith(f".{name}") for name in declared)
+
+
 def _read_quant_configs(
-    filepath: str, header: dict[str, Any], data_offset: int
+    filepath: str,
+    header: dict[str, Any],
+    data_offset: int,
+    declared: dict[str, dict[str, Any]] | None = None,
 ) -> set[tuple[str, bool]]:
     """(format, uses convrot) for a sample of the quantized layers.
 
@@ -368,9 +404,17 @@ def _read_quant_configs(
     so the rotation that separates "INT8 (convrot: per-channel + rotation)" from
     plain tensor-wise INT8 -- two different entries in this extension's own
     output-format dropdown -- is invisible until the bytes are read.
+
+    Layers in `declared` are skipped: Forge replaces their blobs with the
+    declaration, so the bytes on disk are not what runs.
     """
     found: set[tuple[str, bool]] = set()
-    keys = [k for k in header if k.endswith(".comfy_quant")][:_QUANT_SAMPLE_LAYERS]
+    keys = [
+        k
+        for k in header
+        if k.endswith(".comfy_quant")
+        and not (declared and _is_declared(k[: -len(".comfy_quant")], declared))
+    ][:_QUANT_SAMPLE_LAYERS]
     if not keys:
         return found
     try:
@@ -399,16 +443,27 @@ def _detect_precision(
 ) -> str:
     # Check comfy_quant presence first
     has_comfy_quant = any(k.endswith(".comfy_quant") for k in header)
-    if has_comfy_quant:
-        if filepath:
-            configs = _read_quant_configs(filepath, header, data_offset)
-            labels = sorted(
-                _QUANT_FORMAT_LABELS.get((fmt, convrot), fmt) for fmt, convrot in configs
-            )
-            if len(labels) == 1:
-                return f"{labels[0]} (comfy_quant)"
-            if labels:
-                return f"Mixed: {', '.join(labels)} (comfy_quant)"
+    declared = _declared_quant_layers(header)
+    if has_comfy_quant or declared:
+        configs = {
+            (conf["format"], bool(conf.get("convrot")))
+            for conf in declared.values()
+            if isinstance(conf.get("format"), str) and conf["format"]
+        }
+        if filepath and has_comfy_quant:
+            configs |= _read_quant_configs(filepath, header, data_offset, declared)
+        labels = sorted(
+            _QUANT_FORMAT_LABELS.get((fmt, convrot), fmt) for fmt, convrot in configs
+        )
+        # Named after where the formats were found only when that is unusual:
+        # a file with blobs keeps the suffix it always had.
+        source = "comfy_quant" if has_comfy_quant else "quantization metadata"
+        if len(labels) == 1:
+            return f"{labels[0]} ({source})"
+        if labels:
+            return f"Mixed: {', '.join(labels)} ({source})"
+        if not has_comfy_quant:
+            return f"Quantized ({source})"
 
         format_name = None
         for k in header:
