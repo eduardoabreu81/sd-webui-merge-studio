@@ -95,6 +95,8 @@ The result is reported as an AIO only after it reopens with no external modules.
 2. Select a LoRA and set its strength, using **Add LoRA** for more.
 3. Click **Merge / Process**.
 
+LoRAs are listed by their real name when one is available (from CivitAI, or the name given when it was trained), with the model type it was made for and the file name beside it, like `Detail Tweaker XL · v2.0 · xl — add-detail-xl`. Type any part of it to filter the list. If a LoRA was made for a different model type than the Primary Model, a warning tells you before the bake.
+
 ### Inspect a model
 
 1. Open **Model Recipe & Inspector**.

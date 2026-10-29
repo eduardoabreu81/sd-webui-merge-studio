@@ -26,16 +26,19 @@ from merge_studio import (  # noqa: E402
     elemental_weights,
     lora_bake,
     lora_extract,
+    lora_labels,
     lora_merge,
     merge_modes,
     quant_repair,
 )
+from merge_studio.architecture_guess import guess_architecture  # noqa: E402
 from merge_studio.checkpoint_inspector import (  # noqa: E402
     available_vaes,
     format_badges_html,
     format_recipe_dashboard_html,
     get_model_family,
     inspect_checkpoint,
+    read_safetensors_header,
 )
 from merge_studio.quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
@@ -122,7 +125,7 @@ def _module_choices() -> list[str]:
 _POOL_PREFIXES = (("Checkpoint", "ckpt"), ("LoRA", "lora"), ("Module", "module"))
 
 
-def _inspect_choices() -> list[str]:
+def _inspect_choices() -> list:
     def _safe(fn):
         try:
             return sorted(fn())
@@ -130,7 +133,12 @@ def _inspect_choices() -> list[str]:
             return []
 
     out = [f"[ckpt] {n}" for n in _safe(sd_models.checkpoint_tiles)]
-    out += [f"[lora] {n}" for n in _safe(lambda: lora_bake.available_loras().keys())]
+    # The value stays "[lora] <name>" for `_inspect_path`; only the text shown
+    # carries the readable name.
+    out += [
+        (f"[lora] {label}", f"[lora] {name}")
+        for label, name in _safe(lambda: lora_labels.lora_choices(lora_bake.available_loras()))
+    ]
     out += [f"[module] {n}" for n in _safe(_module_choices)]
     return out
 
@@ -199,6 +207,29 @@ def _checkpoint_path(name: str) -> str:
     if info is None:
         raise ValueError(f"Checkpoint not found: {name}")
     return info.filename
+
+
+def _lora_architecture_warning(checkpoint_name: str, loras) -> str:
+    """Names the LoRAs made for another architecture than the checkpoint.
+
+    `loras` holds (name, path) pairs. Returns "" when they match, or when
+    either side's architecture is unknown -- this only warns, it never blocks,
+    because a header the classifier misreads must not stop a bake.
+    """
+    try:
+        header, _ = read_safetensors_header(_checkpoint_path(checkpoint_name))
+        detector = guess_architecture(header, "").detector
+        mismatched = lora_labels.architecture_mismatches(detector, loras)
+    except Exception:
+        return ""
+    if not mismatched:
+        return ""
+    wanted = lora_labels.CHECKPOINT_TO_LORA_LABEL[detector]
+    listed = ", ".join(f"{name} ({'/'.join(sorted(archs))})" for name, archs in mismatched)
+    return (
+        f"These LoRAs look made for another architecture than the Primary Model ({wanted}): "
+        f"{listed}. Baking them may change nothing or damage the result."
+    )
 
 
 def _err_html(e: Exception) -> str:
@@ -293,11 +324,16 @@ def repair_handler(id_task, checkpoint_name: str, mode: str, new_filename: str):
 
 
 def _lora_choices():
+    """(label, name) pairs: the readable name is shown, the Forge name is the
+    value, so recipes and handlers keep working with plain names."""
     try:
         loras = lora_bake.available_loras()
     except Exception:
         loras = {}
-    return [NONE_LABEL] + sorted(loras.keys())
+    try:
+        return [NONE_LABEL] + lora_labels.lora_choices(loras)
+    except Exception:
+        return [NONE_LABEL] + sorted(loras.keys())
 
 
 DEVICE_CHOICES = [
@@ -601,7 +637,7 @@ def load_recipe_handler(recipe_name: str):
         loras = recipe.get("loras", []) or []
 
         checkpoints = set(sd_models.checkpoint_tiles())
-        lora_names = set(_lora_choices())
+        lora_names = {c[1] if isinstance(c, tuple) else c for c in _lora_choices()}
         vae_names = set(_vae_choices())
         missing = []
 
@@ -970,6 +1006,7 @@ def merge_handler(
 
         loras_by_name = lora_bake.available_loras()
         selected_loras = []
+        picked_loras = []
         for i in range(0, len(lora_args), 2):
             if i + 1 < len(lora_args):
                 name = lora_args[i]
@@ -982,6 +1019,12 @@ def merge_handler(
                     except Exception:
                         str_val = 1.0
                     selected_loras.append((loras_by_name[name], str_val))
+                    picked_loras.append((name, loras_by_name[name]))
+
+        if picked_loras:
+            arch_warning = _lora_architecture_warning(primary_name, picked_loras)
+            if arch_warning:
+                gr.Warning(arch_warning)
 
         if not output_filename:
             raise ValueError("Enter an output filename.")
@@ -1376,8 +1419,30 @@ def lora_merge_preview_handler(*args):
             gr.update(),
         )
     return (
-        lora_merge.format_merge_preview_html(plan),
+        _lora_merge_architecture_html(names) + lora_merge.format_merge_preview_html(plan),
         gr.update(placeholder=_suggested_merge_name(names, target_rank)),
+    )
+
+
+def _lora_merge_architecture_html(names) -> str:
+    """A note when the picked LoRAs were made for different architectures.
+
+    Merging still runs when the shapes allow it; the note is there because the
+    shapes can line up by accident (an attention-only LoRA fits several
+    families) and the result would then mean nothing.
+    """
+    try:
+        library = lora_bake.available_loras()
+        picked = [(n, library[n]) for n in names if n and n != NONE_LABEL and n in library]
+        split = lora_labels.disjoint_architectures(picked)
+    except Exception:
+        return ""
+    if not split:
+        return ""
+    listed = ", ".join(f"{html.escape(n)} ({'/'.join(sorted(a))})" for n, a in split)
+    return (
+        "<div style='margin-top:6px;font-size:12px;color:#f59e0b;'>"
+        f"These LoRAs look made for different architectures: {listed}.</div>"
     )
 
 
