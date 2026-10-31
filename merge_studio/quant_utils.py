@@ -22,7 +22,7 @@ from backend.quant_ops import QUANT_ALGOS, QuantizedTensor
 
 from .quant_profiles import profile_for
 
-PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16}
+PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
 
 # Anima's LLMAdapter is a submodule of the text encoder at runtime (loader.py
 # ::process_anima moves it there) but is part of the DiT on disk. Converting the
@@ -87,6 +87,7 @@ OUTPUT_FORMAT_CHOICES = [
     ("Same as source checkpoint", "same"),
     ("FP16 (no quantization)", "fp16"),
     ("BF16 (no quantization)", "bf16"),
+    ("FP32 (no quantization, twice the size of BF16)", "fp32"),
     ("FP8 (e4m3fn)", "float8_e4m3fn"),
     ("FP8 (e5m2)", "float8_e5m2"),
     ("INT8 (tensor-wise, single scale)", "int8_tensorwise"),
@@ -113,6 +114,10 @@ def is_quantized(module: nn.Module) -> bool:
     return isinstance(getattr(module, "weight", None), QuantizedTensor)
 
 
+def is_quantized_tensor(tensor) -> bool:
+    return isinstance(tensor, QuantizedTensor)
+
+
 def weight_as_float(module: nn.Module) -> torch.Tensor | None:
     """Returns the module's current weight as a plain float32 tensor,
     dequantizing first if needed. Returns None if the module has no weight."""
@@ -135,7 +140,31 @@ def _resolve_quant_format(target_format: str) -> tuple[str, dict]:
     raise QuantConversionError(f"Unknown target format: {target_format}")
 
 
-def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_format: str | None = None) -> None:
+def _quantize_weight(float_weight: torch.Tensor, layout_name: str, quant_input_dtype: torch.dtype, **kwargs) -> QuantizedTensor:
+    """QuantizedTensor.from_float, fed in quant_input_dtype.
+
+    BF16 is what every layout accepts and what the official builds were made
+    from. FP32 keeps changes smaller than half a BF16 step (merge_precision.py
+    has the numbers); a layout whose kernel refuses it falls back to BF16. The
+    result is relabelled BF16 either way: orig_dtype is never written to disk,
+    but it sets the dtype `dequantize()` returns, and the rest of the pipeline
+    expects the BF16 one.
+    """
+    if quant_input_dtype != torch.bfloat16:
+        try:
+            qt = QuantizedTensor.from_float(float_weight.to(quant_input_dtype), layout_name, scale="recalculate", **kwargs)
+            return qt.to(torch.bfloat16)
+        except Exception as e:
+            debug_print(f"{layout_name} refused a {quant_input_dtype} input ({e}); quantizing from bfloat16 instead.")
+    return QuantizedTensor.from_float(float_weight.to(torch.bfloat16), layout_name, scale="recalculate", **kwargs)
+
+
+def set_module_weight(
+    module: nn.Module,
+    float_weight: torch.Tensor,
+    target_format: str | None = None,
+    quant_input_dtype: torch.dtype = torch.bfloat16,
+) -> None:
     """Writes float_weight back into module.
 
     - If target_format is given (a key of PLAIN_FORMATS, QUANT_ALGOS, or
@@ -145,6 +174,8 @@ def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_form
       merge that keeps the primary model's architecture); modules that
       weren't quantized just get the float tensor cast back to their
       current plain dtype.
+
+    quant_input_dtype: the precision the quantizer sees (see _quantize_weight).
     """
     current = module.weight
 
@@ -161,7 +192,7 @@ def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_form
                     extra_kwargs["per_channel"] = True
                     if hasattr(p, "convrot_groupsize"):
                         extra_kwargs["convrot_groupsize"] = p.convrot_groupsize
-            qt = QuantizedTensor.from_float(float_weight.to(torch.bfloat16), layout_name, scale="recalculate", **extra_kwargs)
+            qt = _quantize_weight(float_weight, layout_name, quant_input_dtype, **extra_kwargs)
             module.weight = nn.Parameter(qt, requires_grad=False)
         else:
             module.weight = nn.Parameter(float_weight.to(current.dtype), requires_grad=False)
@@ -198,7 +229,7 @@ def set_module_weight(module: nn.Module, float_weight: torch.Tensor, target_form
                 layer_kwargs.pop("convrot", None)
                 layer_kwargs.pop("convrot_groupsize", None)
     try:
-        qt = QuantizedTensor.from_float(float_weight.to(torch.bfloat16), layout_name, scale="recalculate", **layer_kwargs)
+        qt = _quantize_weight(float_weight, layout_name, quant_input_dtype, **layer_kwargs)
     except Exception as e:
         raise QuantConversionError(f"Failed to quantize to {target_format}: {e}") from e
     module.weight = nn.Parameter(qt, requires_grad=False)
@@ -284,6 +315,7 @@ def convert_module_tree_precision(
     output_format: str,
     progress_cb=None,
     skip_names: tuple[str, ...] = (),
+    quant_input_dtype: torch.dtype = torch.bfloat16,
 ) -> tuple[int, dict[str, torch.Tensor]]:
     """Rewrites, in place, every eligible weight under root_module to
     output_format (a key of PLAIN_FORMATS, QUANT_ALGOS or
@@ -291,6 +323,9 @@ def convert_module_tree_precision(
 
     skip_names: module-path substrings to leave untouched, for a subtree that
     belongs to a component this call is not converting.
+
+    quant_input_dtype: the precision the quantizer sees; float32 for a model
+    that was patched in float32 (merge_precision.py).
 
     Returns (converted_count, state_dict_overrides). state_dict_overrides
     contains the correctly-serialized replacement entries (weight/scale/
@@ -325,7 +360,7 @@ def convert_module_tree_precision(
             progress_cb(i + 1, total, name)
         debug_print(f"Converting layer ({i + 1}/{total}): {name}")
         float_w = weight_as_float(module)
-        set_module_weight(module, float_w, target_format=output_format)
+        set_module_weight(module, float_w, target_format=output_format, quant_input_dtype=quant_input_dtype)
         _quantized_weight_state_dict(module, overrides, f"{name}.")
 
     debug_print(f"Successfully converted all {total} layers to '{output_format}'.")

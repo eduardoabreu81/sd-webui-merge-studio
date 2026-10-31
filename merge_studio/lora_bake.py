@@ -8,6 +8,7 @@ supported by backend/quant_ops.py) for the diffusion model.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import os
@@ -21,7 +22,8 @@ from modules import shared
 from .aux_inspector import embedded_activation_text, magnitude_markers
 from .checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
 from .forge_capabilities import vae_key_prefix_for_saving
-from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, to_cpu_contiguous_state_dict
+from .merge_precision import forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, to_cpu_contiguous_state_dict
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import source_precision_keys, try_match_source_dtypes
 
@@ -190,6 +192,7 @@ def bake_lora_into_checkpoint(
     save_mode: str = "unet_only",
     device_choice: str = "auto",
     bake_vae: str | None = "original",
+    merge_precision: str = "native",
     progress_cb=None,
 ) -> dict:
     """loras: list of (lora_path, strength), applied in sequence.
@@ -208,7 +211,15 @@ def bake_lora_into_checkpoint(
     (video-capable), which is considerably larger than a typical image VAE.
     device_choice: "auto" (pick GPU only if it comfortably fits), "gpu"
     (force, may OOM on smaller cards), or "cpu" (force, always fits but
-    slower)."""
+    slower).
+    merge_precision: "native" applies the LoRAs the way generation does
+    (float16 math on most GPUs, rounded to the checkpoint's dtype); "fp32"
+    upcasts the diffusion model, does the math in float32 on any device and
+    quantizes from that result (merge_precision.py). A quantized base keeps
+    its quantized layers; Forge patches those in float32 and requantizes
+    them once."""
+
+    fp32 = merge_precision == "fp32"
 
     if progress_cb:
         progress_cb("Loading base checkpoint...")
@@ -229,6 +240,16 @@ def bake_lora_into_checkpoint(
         unet = engine.forge_objects.unet
         clip = engine.forge_objects.clip
         applied = []
+
+        if fp32:
+            diffusion_model = unet.model.diffusion_model
+            # Before picking the device, so the VRAM estimate counts float32.
+            if progress_cb:
+                progress_cb("Upcasting the diffusion model to float32...")
+            upcast_to_float32(diffusion_model, skip=is_quantized_tensor)
+            if progress_cb:
+                for note in fp32_notes(any(is_quantized(m) for m in diffusion_model.modules()), output_format, "the base", PLAIN_FORMATS):
+                    progress_cb(note)
 
         save_full = save_mode == "full"
         device, device_reason = _pick_device(unet, clip if save_full else None, device_choice)
@@ -259,9 +280,10 @@ def bake_lora_into_checkpoint(
         if progress_cb:
             progress_cb("Materializing patched weights (this can take a while)...")
 
-        unet.patch_model(device_to=device, lowvram_model_memory=0, force_patch_weights=True)
-        if save_full:
-            clip.patcher.patch_model(device_to=device, lowvram_model_memory=0, force_patch_weights=True)
+        with forced_lora_compute_dtype(memory_management, torch.float32) if fp32 else contextlib.nullcontext():
+            unet.patch_model(device_to=device, lowvram_model_memory=0, force_patch_weights=True)
+            if save_full:
+                clip.patcher.patch_model(device_to=device, lowvram_model_memory=0, force_patch_weights=True)
 
         unet_overrides = {}
         clip_overrides = {}
@@ -274,6 +296,7 @@ def bake_lora_into_checkpoint(
                 unet.model.diffusion_model,
                 output_format,
                 progress_cb=(lambda i, total, name: progress_cb(f"Quantizing ({i}/{total}): {name}")) if progress_cb else None,
+                quant_input_dtype=torch.float32 if fp32 else torch.bfloat16,
             )
 
         if save_full and clip_output_format != "same":
@@ -402,6 +425,7 @@ def bake_lora_into_checkpoint(
             "base_model": os.path.basename(checkpoint_path),
             "loras": applied,
             "save_mode": save_mode,
+            "merge_precision": merge_precision,
             "output_format": output_format,
             "clip_output_format": clip_output_format if save_full else "n/a (unet_only)",
             "vae_output_format": vae_output_format if save_full else "n/a (unet_only)",
@@ -421,6 +445,7 @@ def bake_lora_into_checkpoint(
             "output": output_path,
             "loras": applied,
             "output_format": output_format,
+            "merge_precision": merge_precision,
             "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),
         }
     finally:

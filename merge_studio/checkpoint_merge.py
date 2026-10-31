@@ -15,6 +15,7 @@ which re-quantizes automatically for layers that were quantized.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import os
@@ -48,7 +49,8 @@ from .component_bundle import (
 from .forge_capabilities import vae_key_prefix_for_saving
 from . import anima_remap
 from . import elemental_weights
-from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
+from .merge_precision import forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import apply_component_precision, source_precision_keys, try_match_source_dtypes
 from .merge_modes import (
@@ -115,6 +117,7 @@ def _build_metadata(
     beta: float = 0.0,
     block_weights: str = "",
     seed: int = 0,
+    merge_precision: str = "native",
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -155,6 +158,9 @@ def _build_metadata(
         # Without this a DARE recipe cannot reproduce its own merge.
         if merge_mode(interp_method).needs_seed:
             merge_recipe["seed"] = seed
+        # Only when it differs from how every other merge runs.
+        if merge_precision != "native":
+            merge_recipe["merge_precision"] = merge_precision
         if components:
             # What went into this AIO, so another run can reconstruct the
             # same composition instead of inheriting whatever is configured.
@@ -700,7 +706,14 @@ def merge_checkpoints(
     beta: float = 0.0,
     block_weights: str = "",
     seed: int = 0,
+    merge_precision: str = "native",
 ) -> dict:
+    """merge_precision: "native" keeps Model A's precision and Forge's LoRA
+    math (float16 on most GPUs); "fp32" upcasts Model A's diffusion model,
+    merges and applies LoRAs in float32 and quantizes from that result
+    (merge_precision.py). A quantized Model A keeps its quantized layers;
+    Forge patches those in float32 and requantizes them once."""
+    fp32 = merge_precision == "fp32"
     # Which models a mode needs is a property of the mode, declared once in
     # MERGE_MODES rather than restated here every time one is added.
     mode = merge_mode(interp_method)
@@ -806,6 +819,15 @@ def merge_checkpoints(
         vae_a = engine_a.forge_objects.vae.first_stage_model if getattr(engine_a.forge_objects, "vae", None) else None
         vae_b = engine_b.forge_objects.vae.first_stage_model if engine_b and getattr(engine_b.forge_objects, "vae", None) else None
         vae_c = engine_c.forge_objects.vae.first_stage_model if engine_c and getattr(engine_c.forge_objects, "vae", None) else None
+
+        if fp32:
+            # Before picking the device, so the VRAM estimate counts float32.
+            if progress_cb:
+                progress_cb("Upcasting Model A's diffusion model to float32...")
+            upcast_to_float32(diffusion_a, skip=is_quantized_tensor)
+            if progress_cb:
+                for note in fp32_notes(any(is_quantized(m) for m in diffusion_a.modules()), output_format, "Model A", PLAIN_FORMATS):
+                    progress_cb(note)
 
         # Determine target device
         target_device, device_reason = _pick_device(
@@ -952,9 +974,10 @@ def merge_checkpoints(
             if progress_cb:
                 progress_cb("Materializing patched weights (this can take a while)...")
 
-            unet.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
-            if (save_full or any(a["llm_adapter_warning"] for a in applied_loras)) and clip is not None and getattr(clip, "patcher", None) is not None:
-                clip.patcher.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
+            with forced_lora_compute_dtype(memory_management, torch.float32) if fp32 else contextlib.nullcontext():
+                unet.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
+                if (save_full or any(a["llm_adapter_warning"] for a in applied_loras)) and clip is not None and getattr(clip, "patcher", None) is not None:
+                    clip.patcher.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
 
         unet_overrides = {}
         clip_overrides = {}
@@ -966,6 +989,7 @@ def merge_checkpoints(
             _, unet_overrides = convert_module_tree_precision(
                 diffusion_a, output_format,
                 progress_cb=(lambda i, t, n: progress_cb(f"Quantizing ({i}/{t}): {n}")) if progress_cb else None,
+                quant_input_dtype=torch.float32 if fp32 else torch.bfloat16,
             )
 
         if save_mode == "full" and clip_output_format != "same" and clip_a is not None:
@@ -1116,6 +1140,7 @@ def merge_checkpoints(
                 beta=beta,
                 block_weights=block_weights,
                 seed=seed,
+                merge_precision=merge_precision,
             )
         )
 
@@ -1141,6 +1166,7 @@ def merge_checkpoints(
             "skipped": {"unet": skipped_unet, "clip": skipped_clip, "vae": skipped_vae},
             "anima_remap": anima_remap_note,
             "output_format": output_format,
+            "merge_precision": merge_precision,
             "save_mode": save_mode,
             "loras": applied_loras,
             "baked_vae": os.path.basename(bake_vae) if is_custom_vae else ("none" if strip_vae else None),

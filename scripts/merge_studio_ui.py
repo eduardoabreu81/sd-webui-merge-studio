@@ -40,6 +40,7 @@ from merge_studio.checkpoint_inspector import (  # noqa: E402
     inspect_checkpoint,
     read_safetensors_header,
 )
+from merge_studio.merge_precision import MERGE_PRECISION_CHOICES, MERGE_PRECISION_LABEL_TO_KEY  # noqa: E402
 from merge_studio.quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
 
@@ -520,7 +521,7 @@ RECIPE_FIELDS = (
     "save_mode", "device", "output_name", "discard",
     "format", "clip_format", "vae_format",
     "save_metadata", "config_source", "add_merge_recipe", "bake_vae",
-    "anima_extend_rule",
+    "anima_extend_rule", "merge_precision",
 )
 
 
@@ -964,6 +965,7 @@ def merge_handler(
     config_source: list[str] = None,
     add_merge_recipe: bool = True,
     bake_vae_label: str = ORIGINAL_VAE_LABEL,
+    merge_precision_label: str = MERGE_PRECISION_CHOICES[0][0],
     *component_and_lora_args,
 ):
     # One variadic, split at a known boundary: the component rows come first
@@ -996,6 +998,7 @@ def merge_handler(
         vae_output_format = FORMAT_LABEL_TO_KEY.get(vae_format_label, "same")
         save_mode = SAVE_MODE_LABEL_TO_KEY.get(save_mode_label, "unet_only")
         device_choice = DEVICE_LABEL_TO_KEY.get(device_label, "auto")
+        merge_precision = MERGE_PRECISION_LABEL_TO_KEY.get(merge_precision_label, "native")
 
         if bake_vae_label == ORIGINAL_VAE_LABEL:
             bake_vae = "original"
@@ -1061,6 +1064,7 @@ def merge_handler(
             beta=float(beta or 0.0),
             block_weights=block_weights or "",
             seed=int(seed or 0),
+            merge_precision=merge_precision,
         )
 
         sd_models.list_models()
@@ -1794,6 +1798,17 @@ def create_merge_studio_tab():
                     merge_clip_format = _format_dropdown("Text encoder format (only for Full mode)")
                     merge_vae_format = _format_dropdown("VAE format (only for Full mode)")
 
+                merge_precision = gr.Radio(
+                    choices=[label for label, _ in MERGE_PRECISION_CHOICES],
+                    value=MERGE_PRECISION_CHOICES[0][0],
+                    label="Merge precision (diffusion model)",
+                    info=(
+                        "FP32 merges and bakes LoRAs in float32 and quantizes from that, so small changes such as "
+                        "turbo/DMD LoRAs survive. Best on a bf16 Model A with an FP32 or quantized output ('Same as "
+                        "source' rounds back to bf16). An int8 Model A also works: keep 'Same as source' there."
+                    ),
+                )
+
                 with gr.Row(equal_height=True):
                     merge_bake_vae = gr.Dropdown(
                         label="Bake VAE",
@@ -1943,7 +1958,7 @@ def create_merge_studio_tab():
                     merge_save_mode, merge_device, merge_output_name, merge_discard,
                     merge_format, merge_clip_format, merge_vae_format,
                     merge_save_metadata, merge_config_source, merge_add_recipe, merge_bake_vae,
-                    anima_extend_rule,
+                    anima_extend_rule, merge_precision,
                 ]
                 recipe_dds = [dd for dd, _ in merge_lora_rows]
                 recipe_sts = [st for _, st in merge_lora_rows]
@@ -2015,6 +2030,7 @@ def create_merge_studio_tab():
                         merge_config_source,
                         merge_add_recipe,
                         merge_bake_vae,
+                        merge_precision,
                         *[c for row in merge_component_rows for c in row],
                         *[c for pair in merge_lora_rows for c in pair],
                     ],
@@ -2344,6 +2360,7 @@ def create_merge_studio_tab():
             merge_clip_format,
             merge_vae_format,
             merge_bake_vae,
+            merge_precision,
             inspector_checkpoint,
             merge_save_metadata,
             merge_config_source,
