@@ -95,6 +95,8 @@ The result is reported as an AIO only after it reopens with no external modules.
 2. Select a LoRA and set its strength, using **Add LoRA** for more.
 3. Click **Merge / Process**.
 
+Already have the LoRAs in a prompt? Paste it, or just its `<lora:name:weight>` tags, into **Paste LoRAs from a prompt** and every LoRA fills its own row with its weight. Any name not found in your LoRA folder is listed so you can pick it by hand. The **LoRA Merge** tab has the same box.
+
 LoRAs are listed by their real name when one is available (from CivitAI, or the name given when it was trained), with the model type it was made for and the file name beside it, like `Detail Tweaker XL · v2.0 · xl — add-detail-xl`. Type any part of it to filter the list. If a LoRA was made for a different model type than the Primary Model, a warning tells you before the bake.
 
 **Merge precision → FP32** keeps changes a BF16 checkpoint would round away, which is what turbo and DMD LoRAs carry. The diffusion model is upcast, the merge and the LoRA math run in float32 on any device (Forge's own LoRA math is float16 on most GPUs), and the output is quantized straight from that result. It takes about twice the RAM. A bf16 Model A gets the most out of it; pair that with an **FP32** or quantized output, since **Same as source** rounds the result back to bf16. An already-quantized Model A (e.g. int8 ConvRot) works too: its quantized layers are patched in float32 and requantized once — keep **Same as source** there to avoid quantizing them a second time — but what its own quantization lost does not come back.

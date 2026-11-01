@@ -28,6 +28,7 @@ from merge_studio import (  # noqa: E402
     lora_extract,
     lora_labels,
     lora_merge,
+    lora_tags,
     merge_modes,
     quant_repair,
 )
@@ -335,6 +336,51 @@ def _lora_choices():
         return [NONE_LABEL] + lora_labels.lora_choices(loras)
     except Exception:
         return [NONE_LABEL] + sorted(loras.keys())
+
+
+LORA_TAGS_PLACEHOLDER = "<lora:style_a:0.7>, <lora:detail_b:1.0>"
+
+
+def _lora_slots_from_tags(text, slots, min_weight, max_weight, min_visible=1):
+    """Updates that fill the LoRA rows from the tags pasted in `text`:
+    [visible count] + row visibility + dropdown values + weights + status.
+    Nothing changes until the text holds at least one complete tag."""
+    keep = [gr.update() for _ in range(1 + 3 * slots)]
+    tags = lora_tags.parse(text)
+    if not tags:
+        return keep + [""]
+    try:
+        names = lora_bake.available_loras().keys()
+        aliases = lora_bake.available_lora_aliases()
+    except Exception:
+        names, aliases = (), {}
+    found, missing = lora_tags.resolve(tags, names, aliases)
+
+    notes = []
+    if missing:
+        notes.append("Not found in your LoRA folder: " + ", ".join(f"<code>{html.escape(n)}</code>" for n in missing))
+    if len(found) > slots:
+        notes.append(f"Only the first {slots} fit; skipped " + ", ".join(f"<code>{html.escape(n)}</code>" for n, _ in found[slots:]))
+        found = found[:slots]
+    clamped = [n for n, w in found if not min_weight <= w <= max_weight]
+    if clamped:
+        notes.append(f"Weight limited to {min_weight:g}..{max_weight:g} for " + ", ".join(f"<code>{html.escape(n)}</code>" for n in clamped))
+    if not found:
+        return keep + ["<div>" + "<br>".join(notes) + "</div>"]
+
+    count = max(min_visible, len(found))
+    names_out = [n for n, _ in found] + [NONE_LABEL] * (slots - len(found))
+    weights_out = [min(max(w, min_weight), max_weight) for _, w in found] + [1.0] * (slots - len(found))
+    status = f"Filled {len(found)} LoRA slot{'s' if len(found) != 1 else ''}."
+    # A LoRA added since the tab was built is not among the dropdowns' choices yet.
+    choices = _lora_choices()
+    return (
+        [count]
+        + [gr.update(visible=(i < count)) for i in range(slots)]
+        + [gr.update(value=n, choices=choices) for n in names_out]
+        + [gr.update(value=w) for w in weights_out]
+        + ["<div>" + "<br>".join([status] + notes) + "</div>"]
+    )
 
 
 DEVICE_CHOICES = [
@@ -1694,6 +1740,13 @@ def create_merge_studio_tab():
 
                 with gr.Accordion("Bake LoRA(s) into Checkpoint (Optional)", open=False):
                     gr.Markdown("Optionally apply one or multiple LoRAs (e.g. Turbo LoRA, Style LoRAs) directly into the checkpoint weights.")
+                    merge_lora_tags = gr.Textbox(
+                        label="Paste LoRAs from a prompt",
+                        placeholder=LORA_TAGS_PLACEHOLDER,
+                        lines=2,
+                        info="Paste a prompt or its <lora:name:weight> tags and the rows below are filled with each LoRA and its weight.",
+                    )
+                    merge_lora_tags_status = gr.HTML("")
                     merge_lora_rows = []
                     merge_lora_row_layouts = []
                     merge_lora_del_btns = []
@@ -1776,6 +1829,14 @@ def create_merge_studio_tab():
                             outputs=all_lora_outputs,
                             queue=False,
                         )
+
+                    merge_lora_tags.change(
+                        fn=lambda text: _lora_slots_from_tags(text, MAX_LORAS, 0.0, 2.0),
+                        inputs=[merge_lora_tags],
+                        outputs=all_lora_outputs + [merge_lora_tags_status],
+                        show_progress=False,
+                        queue=False,
+                    )
 
                 merge_save_mode = gr.Radio(
                     choices=[label for label, _ in SAVE_MODE_CHOICES],
@@ -2190,6 +2251,13 @@ def create_merge_studio_tab():
                     "store their change in a form that does not stack, and are refused by name rather than merged wrongly."
                 )
 
+                lora_merge_tags = gr.Textbox(
+                    label="Paste LoRAs from a prompt",
+                    placeholder=LORA_TAGS_PLACEHOLDER,
+                    lines=2,
+                    info="Paste a prompt or its <lora:name:weight> tags and the rows below are filled with each LoRA and its weight.",
+                )
+                lora_merge_tags_status = gr.HTML("")
                 lora_merge_rows = []
                 lora_merge_layouts = []
                 for i in range(1, MAX_MERGE_SOURCES + 1):
@@ -2228,6 +2296,18 @@ def create_merge_studio_tab():
                     fn=add_merge_source,
                     inputs=[merge_source_count],
                     outputs=[merge_source_count] + lora_merge_layouts,
+                    queue=False,
+                )
+
+                lora_merge_tags.change(
+                    fn=lambda text: _lora_slots_from_tags(text, MAX_MERGE_SOURCES, -2.0, 2.0, min_visible=2),
+                    inputs=[lora_merge_tags],
+                    outputs=[merge_source_count]
+                    + lora_merge_layouts
+                    + [dd for dd, _ in lora_merge_rows]
+                    + [w for _, w in lora_merge_rows]
+                    + [lora_merge_tags_status],
+                    show_progress=False,
                     queue=False,
                 )
 

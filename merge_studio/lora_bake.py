@@ -54,6 +54,16 @@ def available_loras() -> dict[str, str]:
     return {name: net.filename for name, net in networks.available_networks.items()}
 
 
+def available_lora_aliases() -> dict[str, str]:
+    """alias -> name, for the other names a prompt can call a LoRA by
+    (Forge registers each file's `ss_output_name` as an alias)."""
+    networks = _import_lora_networks()
+    if not networks.available_networks:
+        networks.list_available_networks()
+    aliases = getattr(networks, "available_network_aliases", {}) or {}
+    return {alias: net.name for alias, net in aliases.items() if getattr(net, "name", None)}
+
+
 def reload_loras() -> None:
     """Re-scan the LoRA directory from disk.
 
