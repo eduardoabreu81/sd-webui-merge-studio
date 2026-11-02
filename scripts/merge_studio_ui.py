@@ -33,6 +33,7 @@ from merge_studio import (  # noqa: E402
     quant_repair,
 )
 from merge_studio.architecture_guess import guess_architecture  # noqa: E402
+from merge_studio.cancellation import Cancelled, cancellable  # noqa: E402
 from merge_studio.checkpoint_inspector import (  # noqa: E402
     available_vaes,
     format_badges_html,
@@ -444,7 +445,12 @@ def _make_progress_cb(tag: str):
         elif "saving" in msg.lower():
             shared.state.sampling_step = 95
 
-    return progress_cb
+    return cancellable(progress_cb, lambda: shared.state.interrupted)
+
+
+def _cancelled_result(what: str):
+    gr.Info(f"{what} cancelled. Nothing was saved.", duration=6)
+    return gr.update(), f"<div>{what} cancelled. Nothing was saved.</div>"
 
 
 def bake_handler(
@@ -523,6 +529,8 @@ def bake_handler(
             gr.Warning(f"LoRA(s) with LLM adapter weights baked in: {', '.join(llm_adapter_hits)}. Anima's own training guidance says never to train these alongside a LoRA.", duration=10)
             html += f"<div style='color:orange; margin-top: 6px;'>Warning: {', '.join(llm_adapter_hits)} contains LLM adapter weights — not recommended by Anima's own training guidance.</div>"
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
+    except Cancelled:
+        return _cancelled_result("Bake")
     except lora_bake.BakeError as e:
         gr.Warning(str(e), duration=8)
         return gr.update(), f"<div class='error'>{e}</div>"
@@ -1212,6 +1220,8 @@ def merge_handler(
             else:
                 html += f"<div style='color:orange; margin-top: 6px;'>Warning: {skipped_total} layer(s) skipped (missing or incompatible between models).</div>"
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
+    except Cancelled:
+        return _cancelled_result("Merge")
     except checkpoint_merge.MergeError as e:
         gr.Warning(str(e), duration=8)
         return gr.update(), f"<div class='error'>{e}</div>"
@@ -1254,6 +1264,8 @@ def quantize_handler(id_task, checkpoint_name: str, format_label: str, save_mode
             f"</div>"
         )
         return gr.update(choices=sorted(sd_models.checkpoint_tiles())), html
+    except Cancelled:
+        return _cancelled_result("Conversion")
     except checkpoint_quantize.QuantizeError as e:
         gr.Warning(str(e), duration=8)
         return gr.update(), f"<div class='error'>{e}</div>"
@@ -2061,9 +2073,20 @@ def create_merge_studio_tab():
                     queue=False,
                 )
 
-                merge_btn = gr.Button("Merge / Process", variant="primary")
+                with gr.Row():
+                    merge_btn = gr.Button("Merge / Process", variant="primary", scale=4)
+                    merge_cancel_btn = gr.Button("Cancel", variant="stop", scale=1)
+                gr.Markdown(
+                    "Cancel stops at the next step and saves nothing. A step already "
+                    "running (loading a model, materializing LoRAs) finishes first, "
+                    "and once the file is being written it can no longer be cancelled."
+                )
                 with gr.Group(elem_id="checkpoint_doctor_merge_panel"):
                     merge_html = gr.HTML("")
+
+                # Forge's own flag, reset by shared.state.begin() at the start
+                # of every job, so a stray press between merges is harmless.
+                merge_cancel_btn.click(fn=lambda: shared.state.interrupt(), queue=False, show_progress=False)
 
                 merge_btn.click(fn=lambda: "", outputs=[merge_html], queue=False, show_progress=False).then(
                     fn=call_queue.wrap_gradio_gpu_call(merge_handler, extra_outputs=lambda: [gr.skip()]),
