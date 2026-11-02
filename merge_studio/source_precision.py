@@ -84,6 +84,44 @@ def _index_by_grouped_key(header: Mapping[str, Any]) -> dict[tuple[int, str], An
     return index
 
 
+def diffusion_storage_code(path: str) -> str | None:
+    """The safetensors dtype code most of a checkpoint's diffusion-model
+    weights are stored in, counted by element, or None when the header cannot
+    be read or names no diffusion tensor.
+
+    Counted by element rather than by tensor, like Forge's own
+    utils.weight_dtype: a BF16 build keeps a few small F32 tensors (norms,
+    scales) that outnumber nothing that matters. Only the diffusion model is
+    counted, so an AIO file with a BF16 text encoder beside an F32 DiT still
+    reads as F32.
+    """
+    try:
+        header, _ = read_safetensors_header(path)
+    except Exception:
+        return None
+    entries = [
+        (key, info)
+        for key, info in header.items()
+        if key != "__metadata__" and isinstance(info, dict)
+    ]
+    bare_diffusion_file = not any(_grouped_key(key) for key, _ in entries)
+    elements: dict[str, int] = {}
+    for key, info in entries:
+        grouped = _grouped_key(key)
+        if grouped is None and not bare_diffusion_file:
+            continue
+        if grouped is not None and grouped[0] != _DIFFUSION_COMPONENT:
+            continue
+        count = 1
+        for size in info.get("shape") or ():
+            count *= int(size)
+        code = info.get("dtype")
+        elements[code] = elements.get(code, 0) + count
+    if not elements:
+        return None
+    return max(elements, key=elements.get)
+
+
 # Tensors that carry quantization scaling rather than weights. Casting one of
 # these to fp16 silently wrecks the component it belongs to, and no test
 # downstream would catch it, so they are excluded from every cast -- including

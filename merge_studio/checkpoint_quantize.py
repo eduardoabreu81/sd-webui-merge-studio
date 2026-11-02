@@ -11,10 +11,13 @@ import gc
 import json
 import os
 
+import backend.args
+import torch
 from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import shared
 
+from .merge_precision import float32_source_storage
 from .quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
 from .source_precision import source_precision_keys, try_match_source_dtypes
 
@@ -44,7 +47,10 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
 
     if progress_cb:
         progress_cb("Loading checkpoint...")
-    engine = forge_loader(checkpoint_path, additional_state_dicts=shared.opts.forge_additional_modules)
+    # An F32 file (an FP32 merge) would otherwise be loaded as BF16, and the
+    # precision it was saved for would be gone before quantizing.
+    with float32_source_storage(backend.args.dynamic_args, checkpoint_path):
+        engine = forge_loader(checkpoint_path, additional_state_dicts=shared.opts.forge_additional_modules)
 
     try:
         incompat = detect_incompatible_engine(engine)
@@ -52,6 +58,9 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
             raise QuantizeError(f"Checkpoint incompatible with quantization: {incompat}.")
 
         diffusion_model = engine.forge_objects.unet.model.diffusion_model
+        float32_source = getattr(diffusion_model, "storage_dtype", None) == torch.float32
+        if progress_cb and float32_source:
+            progress_cb("Diffusion model loaded in float32; quantizing from float32.")
 
         if progress_cb:
             progress_cb(f"Converting diffusion model to {output_format}...")
@@ -59,6 +68,7 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
             diffusion_model,
             output_format,
             progress_cb=(lambda i, total, name: progress_cb(f"Quantizing ({i}/{total}): {name}")) if progress_cb else None,
+            quant_input_dtype=torch.float32 if float32_source else torch.bfloat16,
         )
 
         if progress_cb:

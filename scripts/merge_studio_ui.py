@@ -1878,7 +1878,8 @@ def create_merge_studio_tab():
                     info=(
                         "FP32 merges and bakes LoRAs in float32 and quantizes from that, so small changes such as "
                         "turbo/DMD LoRAs survive. Best on a bf16 Model A with an FP32 or quantized output ('Same as "
-                        "source' rounds back to bf16). An int8 Model A also works: keep 'Same as source' there."
+                        "source' rounds back to bf16). An int8 Model A also works: keep 'Same as source' there. "
+                        "An FP32 Model A (an earlier FP32 merge) is loaded in FP32 instead of being rounded to bf16."
                     ),
                 )
 

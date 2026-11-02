@@ -33,15 +33,22 @@ memory. An already-quantized base still works: its quantized layers stay as
 they are, and Forge dequantizes each one, patches it in float32 and
 requantizes it once (MixedPrecisionOps.Linear.set_weight). What its own
 quantization already lost does not come back.
+
+An F32 file -- an earlier FP32 merge, say -- is a different case: left to
+itself Forge loads it as BF16 and the extra precision is gone before any of
+this runs. float32_source_storage keeps it float32 through the load, for the
+FP32 mode here and for the Quantize tab, which then quantizes from it.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Callable
 
 import torch
 from torch import nn
+
+from .source_precision import diffusion_storage_code
 
 MERGE_PRECISION_CHOICES = [
     ("Native (Forge's working precision)", "native"),
@@ -72,12 +79,15 @@ def upcast_to_float32(root_module: nn.Module, skip: Callable[[torch.Tensor], boo
     return changed
 
 
-def fp32_notes(base_quantized: bool, output_format: str, base_label: str, plain_formats) -> list[str]:
+def fp32_notes(base_quantized: bool, output_format: str, base_label: str, plain_formats, base_float32: bool = False) -> list[str]:
     """What an FP32 merge cannot do with this base and output, said up front.
 
     Notes rather than refusals: a quantized checkpoint is often all a user
     has, and FP32 still improves it -- the patch math runs in float32 instead
     of float16 and each layer is requantized once.
+
+    base_float32: the base was loaded as float32 (an F32 file, see
+    float32_source_storage), so 'Same as source' already saves F32.
     """
     if base_quantized:
         notes = [
@@ -90,12 +100,42 @@ def fp32_notes(base_quantized: bool, output_format: str, base_label: str, plain_
                 "'Same as source' keeps the single requantization."
             )
         return notes
-    if output_format == "same":
+    if output_format == "same" and not base_float32:
         return [
             f"Note: 'Same as source' saves the diffusion model back in {base_label}'s dtype, which rounds away what "
             "FP32 kept. Pick FP32 or a quantized format to keep it."
         ]
     return []
+
+
+@contextmanager
+def forced_unet_storage_dtype(dynamic_args, dtype: torch.dtype):
+    """Makes Forge store the next diffusion model it loads in `dtype` until
+    the block exits.
+
+    backend/loader.py reads dynamic_args.forge_unet_storage_dtype (the
+    "Diffusion in Low Bits" choice) on every load and falls back to
+    memory_management.unet_dtype() when it is None. That fallback picks BF16
+    on any GPU that handles it, F32 file or not, so an FP32 merge saved to
+    disk came back BF16 the moment it was loaded again. The previous value is
+    put back so generation keeps the user's own choice.
+    """
+    original = getattr(dynamic_args, "forge_unet_storage_dtype", None)
+    dynamic_args.forge_unet_storage_dtype = dtype
+    try:
+        yield
+    finally:
+        dynamic_args.forge_unet_storage_dtype = original
+
+
+def float32_source_storage(dynamic_args, checkpoint_path: str):
+    """forced_unet_storage_dtype(float32) when the file stores its diffusion
+    model in F32, a no-op otherwise. Loading a BF16 file as float32 adds
+    nothing but memory; upcast_to_float32 does that later, where it is asked
+    for."""
+    if diffusion_storage_code(checkpoint_path) == "F32":
+        return forced_unet_storage_dtype(dynamic_args, torch.float32)
+    return nullcontext()
 
 
 @contextmanager

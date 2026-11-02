@@ -24,6 +24,7 @@ import re
 import torch
 import torch.nn as nn
 
+import backend.args
 from backend import memory_management, utils
 from backend.loader import forge_loader
 from modules import sd_models, shared
@@ -50,7 +51,7 @@ from .component_bundle import (
 from .forge_capabilities import vae_key_prefix_for_saving
 from . import anima_remap
 from . import elemental_weights
-from .merge_precision import forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .merge_precision import float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import apply_component_precision, source_precision_keys, try_match_source_dtypes
@@ -84,6 +85,7 @@ def _load_engine(
     additional_state_dicts=None,
     *,
     use_global_modules: bool = True,
+    keep_float32: bool = False,
 ):
     """Load a checkpoint, with either an explicit component list or Forge's.
 
@@ -91,12 +93,16 @@ def _load_engine(
     so its outputs do not change. The AIO path always passes its own list and
     sets `use_global_modules=False`: what goes into the file has to be what was
     chosen, not whatever happened to be configured at the time.
+
+    keep_float32: an FP32 merge keeps an F32 file's diffusion model float32
+    through the load, which Forge would otherwise store as BF16.
     """
     if additional_state_dicts is None:
         additional_state_dicts = (
             shared.opts.forge_additional_modules if use_global_modules else []
         )
-    return forge_loader(checkpoint_path, additional_state_dicts=list(additional_state_dicts))
+    with float32_source_storage(backend.args.dynamic_args, checkpoint_path) if keep_float32 else contextlib.nullcontext():
+        return forge_loader(checkpoint_path, additional_state_dicts=list(additional_state_dicts))
 
 
 def _build_metadata(
@@ -773,13 +779,14 @@ def merge_checkpoints(
     if composition.modular:
         if progress_cb:
             progress_cb("Resolving components...")
-        composition, engine_a = _compose_modular_primary(
-            primary_info, selections, save_mode, progress_cb
-        )
+        with float32_source_storage(backend.args.dynamic_args, primary_info.filename) if fp32 else contextlib.nullcontext():
+            composition, engine_a = _compose_modular_primary(
+                primary_info, selections, save_mode, progress_cb
+            )
     else:
         if progress_cb:
             progress_cb("Loading Primary Model (A)...")
-        engine_a = _load_engine(primary_info.filename)
+        engine_a = _load_engine(primary_info.filename, keep_float32=fp32)
     engine_b = None
     engine_c = None
 
@@ -794,6 +801,7 @@ def merge_checkpoints(
             engine_b = _load_engine(
                 secondary_info.filename,
                 use_global_modules=composition.secondary_uses_global_modules,
+                keep_float32=fp32,
             )
             incompat = detect_incompatible_engine(engine_b)
             if incompat:
@@ -804,6 +812,7 @@ def merge_checkpoints(
             engine_c = _load_engine(
                 tertiary_info.filename,
                 use_global_modules=composition.secondary_uses_global_modules,
+                keep_float32=fp32,
             )
             incompat = detect_incompatible_engine(engine_c)
             if incompat:
@@ -827,7 +836,8 @@ def merge_checkpoints(
                 progress_cb("Upcasting Model A's diffusion model to float32...")
             upcast_to_float32(diffusion_a, skip=is_quantized_tensor)
             if progress_cb:
-                for note in fp32_notes(any(is_quantized(m) for m in diffusion_a.modules()), output_format, "Model A", PLAIN_FORMATS):
+                base_float32 = getattr(diffusion_a, "storage_dtype", None) == torch.float32
+                for note in fp32_notes(any(is_quantized(m) for m in diffusion_a.modules()), output_format, "Model A", PLAIN_FORMATS, base_float32):
                     progress_cb(note)
 
         # Determine target device

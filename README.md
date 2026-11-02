@@ -103,6 +103,8 @@ LoRAs are listed by their real name when one is available (from CivitAI, or the 
 
 **Merge precision → FP32** keeps changes a BF16 checkpoint would round away, which is what turbo and DMD LoRAs carry. The diffusion model is upcast, the merge and the LoRA math run in float32 on any device (Forge's own LoRA math is float16 on most GPUs), and the output is quantized straight from that result. It takes about twice the RAM. A bf16 Model A gets the most out of it; pair that with an **FP32** or quantized output, since **Same as source** rounds the result back to bf16. An already-quantized Model A (e.g. int8 ConvRot) works too: its quantized layers are patched in float32 and requantized once — keep **Same as source** there to avoid quantizing them a second time — but what its own quantization lost does not come back.
 
+An FP32 merge saved to disk makes a good master for your quantized builds. Merge Studio loads an FP32 checkpoint in FP32 when you quantize it, or when you use it with **Merge precision → FP32**, so the extra precision is still there when the quantized versions are made. Left to itself, Forge Neo would load it as BF16 first.
+
 ### Inspect a model
 
 1. Open **Model Recipe & Inspector**.

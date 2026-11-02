@@ -8,6 +8,7 @@ actually carries the choice through to `merge_checkpoints`.
 """
 
 import os
+import tempfile
 import types
 import unittest
 
@@ -17,10 +18,14 @@ from torch import nn
 from merge_studio.merge_precision import (
     MERGE_PRECISION_CHOICES,
     MERGE_PRECISION_LABEL_TO_KEY,
+    float32_source_storage,
     forced_lora_compute_dtype,
+    forced_unet_storage_dtype,
     fp32_notes,
     upcast_to_float32,
 )
+from merge_studio.source_precision import diffusion_storage_code
+from safetensors_helpers import write_safetensors_header
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -107,6 +112,10 @@ class NotesTests(unittest.TestCase):
         self.assertEqual(len(notes), 1)
         self.assertIn("rounds away", notes[0])
 
+    def test_an_f32_base_saved_as_same_keeps_float32(self):
+        # Loaded as float32, 'Same as source' writes F32: nothing rounds away.
+        self.assertEqual(fp32_notes(False, "same", "Model A", self.PLAIN, base_float32=True), [])
+
     def test_a_plain_base_into_fp32_or_a_quantized_format_needs_no_note(self):
         for output in ("fp32", "int8_tensorwise_convrot", "w6a8_int8"):
             self.assertEqual(fp32_notes(False, output, "Model A", self.PLAIN), [], output)
@@ -140,6 +149,72 @@ class ForcedComputeDtypeTests(unittest.TestCase):
         self.assertIs(mm.lora_compute_dtype, original)
 
 
+class StorageCodeTests(unittest.TestCase):
+    def write(self, tensors):
+        handle = tempfile.NamedTemporaryFile(suffix=".safetensors", delete=False)
+        handle.close()
+        self.addCleanup(os.unlink, handle.name)
+        return write_safetensors_header(handle.name, tensors)
+
+    def test_an_fp32_merge_reads_as_f32(self):
+        path = self.write({
+            "model.diffusion_model.layers.0.proj.qkv.weight": ("F32", (64, 32)),
+            "model.diffusion_model.layers.0.norm.weight": ("F32", (32,)),
+        })
+        self.assertEqual(diffusion_storage_code(path), "F32")
+
+    def test_counted_by_element_not_by_tensor(self):
+        # A BF16 build keeps many small F32 norms; the weights decide.
+        tensors = {f"model.diffusion_model.layers.{i}.norm.weight": ("F32", (32,)) for i in range(8)}
+        tensors["model.diffusion_model.layers.0.proj.qkv.weight"] = ("BF16", (64, 32))
+        self.assertEqual(diffusion_storage_code(self.write(tensors)), "BF16")
+
+    def test_only_the_diffusion_model_counts(self):
+        # An AIO file whose text encoder outweighs its DiT.
+        path = self.write({
+            "model.diffusion_model.layers.0.proj.qkv.weight": ("F32", (16, 16)),
+            "text_encoders.qwen3.transformer.embed.weight": ("BF16", (512, 64)),
+            "vae.decoder.conv.weight": ("BF16", (64, 64)),
+        })
+        self.assertEqual(diffusion_storage_code(path), "F32")
+
+    def test_a_bare_diffusion_file_counts(self):
+        self.assertEqual(diffusion_storage_code(self.write({"layers.0.qkv.weight": ("F32", (8, 8))})), "F32")
+
+    def test_an_unreadable_file_is_none(self):
+        self.assertIsNone(diffusion_storage_code(os.path.join(ROOT, "missing.safetensors")))
+
+
+class ForcedStorageDtypeTests(unittest.TestCase):
+    def fake_dynamic_args(self, value=None):
+        return types.SimpleNamespace(forge_unet_storage_dtype=value)
+
+    def test_the_override_holds_inside_and_comes_back(self):
+        # The user's own "Diffusion in Low Bits" choice survives the load.
+        args = self.fake_dynamic_args(torch.float8_e4m3fn)
+        with forced_unet_storage_dtype(args, torch.float32):
+            self.assertIs(args.forge_unet_storage_dtype, torch.float32)
+        self.assertIs(args.forge_unet_storage_dtype, torch.float8_e4m3fn)
+
+    def test_the_original_comes_back_after_a_failure(self):
+        args = self.fake_dynamic_args()
+        with self.assertRaises(RuntimeError):
+            with forced_unet_storage_dtype(args, torch.float32):
+                raise RuntimeError("out of memory")
+        self.assertIsNone(args.forge_unet_storage_dtype)
+
+    def test_only_an_f32_file_is_loaded_as_float32(self):
+        handle = tempfile.TemporaryDirectory()
+        self.addCleanup(handle.cleanup)
+        f32 = write_safetensors_header(os.path.join(handle.name, "a.safetensors"), {"layers.0.w": ("F32", (4, 4))})
+        bf16 = write_safetensors_header(os.path.join(handle.name, "b.safetensors"), {"layers.0.w": ("BF16", (4, 4))})
+        args = self.fake_dynamic_args()
+        with float32_source_storage(args, f32):
+            self.assertIs(args.forge_unet_storage_dtype, torch.float32)
+        with float32_source_storage(args, bf16):
+            self.assertIsNone(args.forge_unet_storage_dtype)
+
+
 class ChoiceTests(unittest.TestCase):
     def test_native_is_the_default(self):
         # Every recipe saved before this option loads with the radio at its
@@ -171,6 +246,16 @@ class WiringTests(unittest.TestCase):
     def test_quantizing_reads_the_float32_result(self):
         for path in (("merge_studio", "checkpoint_merge.py"), ("merge_studio", "lora_bake.py")):
             self.assertIn("quant_input_dtype=torch.float32 if fp32", source(*path), path)
+
+    def test_every_loader_keeps_an_f32_file_float32(self):
+        quantize = source("merge_studio", "checkpoint_quantize.py")
+        self.assertIn("float32_source_storage(backend.args.dynamic_args, checkpoint_path)", quantize)
+        self.assertIn("quant_input_dtype=torch.float32 if float32_source", quantize)
+        bake = source("merge_studio", "lora_bake.py")
+        self.assertIn("float32_source_storage(backend.args.dynamic_args, checkpoint_path) if fp32", bake)
+        merge = source("merge_studio", "checkpoint_merge.py")
+        self.assertEqual(merge.count("keep_float32=fp32"), 3)
+        self.assertIn("float32_source_storage(backend.args.dynamic_args, primary_info.filename) if fp32", merge)
 
     def test_fp32_is_a_plain_output_format(self):
         quant = source("merge_studio", "quant_utils.py")

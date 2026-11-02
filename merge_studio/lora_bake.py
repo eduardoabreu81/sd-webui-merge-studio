@@ -15,6 +15,7 @@ import os
 
 import torch
 
+import backend.args
 from backend import memory_management, utils
 from backend.loader import forge_loader
 from backend.state_dict import state_dict_prefix_replace
@@ -23,7 +24,7 @@ from modules import shared
 from .aux_inspector import embedded_activation_text, magnitude_markers
 from .checkpoint_inspector import load_custom_vae_state_dict, read_safetensors_header
 from .forge_capabilities import vae_key_prefix_for_saving
-from .merge_precision import forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .merge_precision import float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, debug_print, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, to_cpu_contiguous_state_dict
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import source_precision_keys, try_match_source_dtypes
@@ -251,7 +252,9 @@ def bake_lora_into_checkpoint(
     # currently has configured for normal loading -- same as how a regular
     # generation loads this checkpoint. Without this, checkpoints that ship
     # without an embedded VAE fail with "You do not have VAE state dict!".
-    engine = forge_loader(checkpoint_path, additional_state_dicts=shared.opts.forge_additional_modules)
+    # FP32 also has to survive the load: Forge would store an F32 base as BF16.
+    with float32_source_storage(backend.args.dynamic_args, checkpoint_path) if fp32 else contextlib.nullcontext():
+        engine = forge_loader(checkpoint_path, additional_state_dicts=shared.opts.forge_additional_modules)
 
     try:
         incompat = detect_incompatible_engine(engine)
@@ -271,7 +274,8 @@ def bake_lora_into_checkpoint(
                 progress_cb("Upcasting the diffusion model to float32...")
             upcast_to_float32(diffusion_model, skip=is_quantized_tensor)
             if progress_cb:
-                for note in fp32_notes(any(is_quantized(m) for m in diffusion_model.modules()), output_format, "the base", PLAIN_FORMATS):
+                base_float32 = getattr(diffusion_model, "storage_dtype", None) == torch.float32
+                for note in fp32_notes(any(is_quantized(m) for m in diffusion_model.modules()), output_format, "the base", PLAIN_FORMATS, base_float32):
                     progress_cb(note)
 
         save_full = save_mode == "full"
