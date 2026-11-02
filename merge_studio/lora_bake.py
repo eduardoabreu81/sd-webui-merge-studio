@@ -17,6 +17,7 @@ import torch
 
 from backend import memory_management, utils
 from backend.loader import forge_loader
+from backend.state_dict import state_dict_prefix_replace
 from modules import shared
 
 from .aux_inspector import embedded_activation_text, magnitude_markers
@@ -39,6 +40,18 @@ def _import_lora_networks():
     import networks  # type: ignore
 
     return networks
+
+
+def _load_lora_state_dict(lora_path: str) -> dict:
+    """Read a LoRA file the way sd_forge_lora's load_networks does.
+
+    Forge Neo used to expose this as `networks.load_lora_state_dict` and
+    dropped it (2026-10-31), so the read lives here now, prefix fix included.
+    """
+    lora_sd = utils.load_torch_file(lora_path, safe_load=True)
+    if any(key.startswith("lora_unet__") for key in lora_sd):
+        lora_sd = state_dict_prefix_replace(lora_sd, {"lora_unet__": "lora_unet_"})
+    return lora_sd
 
 
 def available_loras() -> dict[str, str]:
@@ -269,7 +282,7 @@ def bake_lora_into_checkpoint(
         for lora_path, strength in loras:
             if progress_cb:
                 progress_cb(f"Applying LoRA: {os.path.basename(lora_path)} (strength={strength})...")
-            lora_sd = networks.load_lora_state_dict(lora_path)
+            lora_sd = _load_lora_state_dict(lora_path)
 
             touches_llm_adapter = _lora_touches_llm_adapter(lora_sd)
             if touches_llm_adapter and progress_cb:

@@ -30,6 +30,7 @@ from modules import sd_models, shared
 
 from .lora_bake import (
     _import_lora_networks,
+    _load_lora_state_dict,
     _lora_activation_text,
     _lora_touches_llm_adapter,
     _pick_device,
@@ -953,7 +954,7 @@ def merge_checkpoints(
             for lora_path, strength in loras:
                 if progress_cb:
                     progress_cb(f"Applying LoRA: {os.path.basename(lora_path)} (strength={strength})...")
-                lora_sd = networks.load_lora_state_dict(lora_path)
+                lora_sd = _load_lora_state_dict(lora_path)
 
                 touches_llm_adapter = _lora_touches_llm_adapter(lora_sd)
                 if touches_llm_adapter and progress_cb:
