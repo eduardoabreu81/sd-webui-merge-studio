@@ -105,6 +105,15 @@ LoRAs are listed by their real name when one is available (from CivitAI, or the 
 
 An FP32 merge saved to disk makes a good master for your quantized builds. Merge Studio loads an FP32 checkpoint in FP32 when you quantize it, or when you use it with **Merge precision → FP32**, so the extra precision is still there when the quantized versions are made. Left to itself, Forge Neo would load it as BF16 first.
 
+**One merge, many quantized builds:**
+
+1. Bake your LoRAs with **Merge precision → FP32** and **Output format → FP32**. This file is your master.
+2. For each build you want (INT8 ConvRot, W6A8, W4A8...), select the master as the Primary Model, choose **No Interpolation**, keep **Merge precision → FP32**, and pick the output format.
+3. Always start from the master, never from a build that is already quantized. Quantizing a quantized file rounds the weights twice.
+4. Keep the master while you are still making builds or comparing them. Without it, every new format means baking the LoRAs again.
+
+A build made from the master comes out the same size as one made from a BF16 checkpoint. If you only need one format, you can skip the master and bake straight into it with **Merge precision → FP32**: the result is the same.
+
 ### Inspect a model
 
 1. Open **Model Recipe & Inspector**.
