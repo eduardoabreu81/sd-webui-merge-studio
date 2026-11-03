@@ -283,6 +283,43 @@ def source_precision_keys(
     return {key for key in keys if not key.startswith(quantized_layers)}
 
 
+def round_float32_rest_to_bf16(
+    state_dict: MutableMapping[str, Any],
+    source_path: str,
+    output_format: str,
+    keys: Iterable[str],
+    plain_formats: Iterable[str],
+    dtype_map: Mapping[str, Any],
+) -> int:
+    """Store a quantized build's unquantized diffusion tensors as BF16 when
+    the source stored its whole diffusion model in F32.
+
+    ``keys`` are the ones source_precision_keys picked for a quantized
+    format: everything outside the quantized layers. Restoring the source's
+    dtype is right for a BF16 build, whose few F32 tensors are deliberate. An
+    F32 source -- an FP32 merge -- says nothing of the kind: every tensor is
+    F32. And Forge loads a quantized checkpoint's plain layers as BF16
+    (backend/loader.py stores the model as bfloat16 once it finds quantized
+    layers), so F32 there only grows the file. Measured on a MOSS-Image W6A8
+    build: 210 tensors, 0.65 GB.
+
+    Returns the number of tensors changed.
+    """
+    if output_format == "same" or output_format in set(plain_formats):
+        return 0
+    if diffusion_storage_code(source_path) != "F32":
+        return 0
+    float32, bfloat16 = dtype_map["F32"], dtype_map["BF16"]
+    changed = 0
+    for key in keys:
+        tensor = state_dict.get(key)
+        if getattr(tensor, "dtype", None) != float32:
+            continue
+        state_dict[key] = tensor.to(bfloat16)
+        changed += 1
+    return changed
+
+
 def match_source_dtypes(
     state_dict: MutableMapping[str, Any],
     source_path: str,

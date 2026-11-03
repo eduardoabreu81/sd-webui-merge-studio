@@ -54,7 +54,7 @@ from . import elemental_weights
 from .merge_precision import float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
-from .source_precision import apply_component_precision, source_precision_keys, try_match_source_dtypes
+from .source_precision import apply_component_precision, round_float32_rest_to_bf16, source_precision_keys, try_match_source_dtypes
 from .merge_modes import (
     INTERP_NO_INTERPOLATION,
     MergeError,
@@ -1104,7 +1104,8 @@ def merge_checkpoints(
             pattern = re.compile(discard_regex)
             sd = {k: v for k, v in sd.items() if not pattern.search(k)}
 
-        same_source_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
+        unet_rest_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
+        same_source_keys = set(unet_rest_keys)
         if save_mode == "full":
             same_source_keys.update(source_precision_keys(clip_output_format, clip_output_keys, sd, PLAIN_FORMATS))
         if save_mode == "full" and not is_custom_vae:
@@ -1117,6 +1118,9 @@ def merge_checkpoints(
                 progress_cb(f"Restored source precision for {restored} tensor(s).")
             if progress_cb and precision_warning:
                 progress_cb(precision_warning)
+        rounded = round_float32_rest_to_bf16(sd, primary_info.filename, output_format, unet_rest_keys, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES)
+        if progress_cb and rounded:
+            progress_cb(f"Saved {rounded} unquantized tensor(s) as BF16: the source is F32, and Forge loads them as BF16 anyway.")
 
         sd = to_cpu_contiguous_state_dict(sd)
 

@@ -19,7 +19,7 @@ from modules import shared
 
 from .merge_precision import float32_source_storage
 from .quant_utils import PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, save_checkpoint_file, to_cpu_contiguous_state_dict
-from .source_precision import source_precision_keys, try_match_source_dtypes
+from .source_precision import round_float32_rest_to_bf16, source_precision_keys, try_match_source_dtypes
 
 
 class QuantizeError(RuntimeError):
@@ -100,11 +100,14 @@ def quantize_checkpoint(checkpoint_path: str, output_path: str, output_format: s
 
         # CLIP and VAE are documented as untouched here, so they take the
         # source's precision like everything the quantization left alone.
-        restore_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
-        restore_keys.update(set(sd) - unet_output_keys)
+        unet_rest_keys = source_precision_keys(output_format, unet_output_keys, sd, PLAIN_FORMATS)
+        restore_keys = unet_rest_keys | (set(sd) - unet_output_keys)
         restored, precision_warning = try_match_source_dtypes(sd, checkpoint_path, restore_keys, SAFETENSORS_FLOAT_DTYPES)
         if progress_cb and restored:
             progress_cb(f"Restored source precision for {restored} tensor(s).")
+        rounded = round_float32_rest_to_bf16(sd, checkpoint_path, output_format, unet_rest_keys, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES)
+        if progress_cb and rounded:
+            progress_cb(f"Saved {rounded} unquantized tensor(s) as BF16: the source is F32, and Forge loads them as BF16 anyway.")
         if progress_cb and precision_warning:
             progress_cb(precision_warning)
         sd = to_cpu_contiguous_state_dict(sd)

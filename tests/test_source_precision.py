@@ -369,5 +369,55 @@ class SourcePrecisionKeysTests(unittest.TestCase):
             self.assertIs(bf16, sd[self.NORM].dtype)
 
 
+class Float32SourceRestTests(unittest.TestCase):
+    """A quantized build from an F32 source keeps its plain layers in BF16:
+    Forge loads them as BF16, so F32 only grew the file (0.65 GB on MOSS W6A8)."""
+
+    PLAIN = ("fp16", "bf16", "fp32")
+    LAYER = "model.diffusion_model.layers.0.proj.qkv."
+    NORM = "model.diffusion_model.layers.0.norm1.weight"
+
+    def run_rounding(self, source_dtype, output_format):
+        from merge_studio.source_precision import round_float32_rest_to_bf16, source_precision_keys
+
+        FakeDtype, FakeTensor = fake_dtypes()
+        fp32, bf16, i8 = FakeDtype("F32"), FakeDtype("BF16"), FakeDtype("I8")
+        sd = {
+            self.LAYER + "weight": FakeTensor(i8),
+            self.LAYER + "weight_s_channel": FakeTensor(fp32),
+            self.LAYER + "comfy_quant": object(),
+            self.NORM: FakeTensor(fp32),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "merge.safetensors"
+            write_source_header(
+                source,
+                {"model.diffusion_model.layers.0.proj.qkv.weight": source_dtype, self.NORM: source_dtype},
+            )
+            keys = source_precision_keys(output_format, sd, sd, self.PLAIN)
+            changed = round_float32_rest_to_bf16(sd, str(source), output_format, keys, self.PLAIN, {"F32": fp32, "BF16": bf16})
+        return changed, sd, bf16, fp32
+
+    def test_plain_layers_of_an_f32_source_become_bf16(self):
+        changed, sd, bf16, fp32 = self.run_rounding("F32", "w6a8_int8")
+        self.assertEqual(1, changed)
+        self.assertIs(bf16, sd[self.NORM].dtype)
+
+    def test_the_quantized_layers_scales_stay_f32(self):
+        _, sd, _, fp32 = self.run_rounding("F32", "w6a8_int8")
+        self.assertIs(fp32, sd[self.LAYER + "weight_s_channel"].dtype)
+
+    def test_a_bf16_source_keeps_its_deliberate_f32_tensors(self):
+        changed, sd, _, fp32 = self.run_rounding("BF16", "w6a8_int8")
+        self.assertEqual(0, changed)
+        self.assertIs(fp32, sd[self.NORM].dtype)
+
+    def test_same_and_plain_outputs_are_left_alone(self):
+        for output in ("same", "fp32"):
+            changed, sd, _, fp32 = self.run_rounding("F32", output)
+            self.assertEqual(0, changed, output)
+            self.assertIs(fp32, sd[self.NORM].dtype, output)
+
+
 if __name__ == "__main__":
     unittest.main()
