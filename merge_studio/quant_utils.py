@@ -56,7 +56,7 @@ class _Colors:
 
 
 def debug_print(msg: str) -> None:
-    print(f"{_Colors.MAGENTA}[DEBUG] {_Colors.BLUE}[Checkpoint Doctor]{_Colors.RESET} - {msg}", flush=True)
+    print(f"{_Colors.MAGENTA}[DEBUG] {_Colors.BLUE}[Merge Studio]{_Colors.RESET} - {msg}", flush=True)
 
 
 # "int8_tensorwise" is the on-disk format name (backend/quant_ops.py::QUANT_ALGOS).

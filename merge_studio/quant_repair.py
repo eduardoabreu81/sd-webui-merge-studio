@@ -17,7 +17,7 @@ import os
 import struct
 from dataclasses import dataclass
 
-logger = logging.getLogger("checkpoint_doctor")
+logger = logging.getLogger("merge_studio")
 
 CHUNK = 16 * 1024 * 1024  # 16MB
 
