@@ -5,6 +5,26 @@
 // so modules/call_queue.py::wrap_gradio_gpu_call can register/track it.
 // One function per action since each targets a different result panel.
 
+// When Forge dies mid-job the progress polling just fails, which ends the bar
+// the same way a finished job does, and the result panel never updates. So ask
+// Forge directly. Several tries, because a machine deep in its pagefile can be
+// slow to answer without having died.
+async function _mergeStudioForgeIsAnswering() {
+    for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+            const res = await fetch("./internal/ping", { cache: "no-store", signal: AbortSignal.timeout(15000) });
+            if (res.ok) return true;
+        } catch (err) {
+            // Tried again below.
+        }
+        await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+    return false;
+}
+
+const MERGE_STUDIO_FORGE_GONE = "<span>\u26a0\ufe0f <b>Lost contact with Forge.</b> It may have closed, often because " +
+    "it ran out of memory. If its console window shows it stopped, nothing was saved: restart Forge and reload this page.</span>";
+
 function _checkpointDoctorSubmit(panelId, args) {
     const id = randomId();
     const panel = gradioApp().getElementById(panelId);
@@ -51,6 +71,12 @@ function _checkpointDoctorSubmit(panelId, args) {
         if (container) {
             container.style.display = "none";
         }
+        _mergeStudioForgeIsAnswering().then(function (answering) {
+            if (answering || !container || !statusDiv) return;
+            statusDiv.innerHTML = MERGE_STUDIO_FORGE_GONE;
+            statusDiv.style.display = "flex";
+            container.style.display = "block";
+        });
     };
 
     const onProgress = function (res) {

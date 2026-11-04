@@ -16,7 +16,7 @@ from torch import nn
 
 from merge_studio.loose_parameters import merge_loose_parameters
 from merge_studio.merge_modes import INTERP_NO_INTERPOLATION, INTERP_WEIGHTED_SUM, merge_mode
-from merge_studio.merge_precision import consume_to_cpu_state_dict, discard_patch_backups
+from merge_studio.merge_precision import consume_to_cpu_state_dict, discard_patch_backups, live_state_dict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -112,6 +112,33 @@ class LooseParameterTests(unittest.TestCase):
         tree = merge[merge.index("def _merge_module_tree("):merge.index("def _per_block_spec(")]
         guard = tree.index("if interp_method != INTERP_NO_INTERPOLATION:")
         self.assertLess(guard, tree.index("merge_loose_parameters("))
+
+
+class LoadedModelTests(unittest.TestCase):
+    def test_the_loaded_checkpoint_goes_before_any_model_loads(self):
+        merge = source("merge_studio", "checkpoint_merge.py")
+        function = merge[merge.index("def merge_checkpoints("):]
+        unload = function.index("sd_models.unload_model_weights()")
+        self.assertLess(unload, function.index("if composition.modular:"))
+        self.assertLess(unload, function.index("_load_engine(primary_info.filename"))
+        # After the checks that can refuse, so a refused merge leaves it loaded.
+        self.assertLess(function.index("_guard_unsupported_submodules(p_insp"), unload)
+
+
+class ForgeGoneNoticeTests(unittest.TestCase):
+    def setUp(self):
+        self.script = source("javascript", "merge_studio.js")
+
+    def test_every_job_asks_forge_when_its_bar_ends(self):
+        at_end = self.script[self.script.index("const atEnd = function () {"):]
+        at_end = at_end[: at_end.index("const onProgress")]
+        self.assertIn("_mergeStudioForgeIsAnswering()", at_end)
+        self.assertIn("MERGE_STUDIO_FORGE_GONE", at_end)
+
+    def test_it_does_not_give_up_on_one_slow_answer(self):
+        probe = self.script[self.script.index("async function _mergeStudioForgeIsAnswering"):]
+        self.assertIn("attempt < 3", probe[:300])
+        self.assertIn('fetch("./internal/ping"', probe[:400])
 
 
 class UnusedModelTests(unittest.TestCase):
@@ -233,6 +260,29 @@ class StateDictCopyTests(unittest.TestCase):
         rest = merge[start:merge.index("    finally:", start)]
         for name in ("custom_vae_sd", "processed_unet", "unet_sd", "diffusion_a", "unet_overrides"):
             self.assertNotIn(name, rest)
+
+    def test_the_state_dict_shares_the_model_memory(self):
+        model = nn.Linear(4, 4)
+        sd = live_state_dict(model)
+        self.assertEqual(model.weight.data_ptr(), sd["weight"].data_ptr())
+        self.assertEqual({"weight", "bias"}, set(sd))
+
+    def test_the_whole_way_out_never_holds_two_models(self):
+        model = nn.Linear(4, 4)
+        pointer_gone = weakref.ref(model.weight)
+        expected = model.weight.detach().clone()
+        sd = live_state_dict(model)
+        del model
+        gc.collect()
+        self.assertIsNone(pointer_gone())
+        out = consume_to_cpu_state_dict(sd)
+        self.assertEqual({}, sd)
+        self.assertTrue(torch.equal(expected, out["weight"]))
+
+    def test_the_merge_no_longer_clones_through_forge(self):
+        merge = source("merge_studio", "checkpoint_merge.py")
+        self.assertNotIn("get_state_dict_after_quant", merge)
+        self.assertEqual(4, merge.count("= live_state_dict("))
 
     def test_the_shared_function_is_the_consuming_one(self):
         utils = source("merge_studio", "quant_utils.py")

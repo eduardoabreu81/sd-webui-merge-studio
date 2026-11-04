@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 
 import backend.args
-from backend import memory_management, utils
+from backend import memory_management
 from backend.loader import forge_loader
 from modules import sd_models, shared
 
@@ -52,7 +52,7 @@ from .forge_capabilities import vae_key_prefix_for_saving
 from . import anima_remap
 from . import elemental_weights
 from .loose_parameters import merge_loose_parameters
-from .merge_precision import discard_patch_backups, float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .merge_precision import discard_patch_backups, float32_source_storage, forced_lora_compute_dtype, fp32_notes, live_state_dict, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import apply_component_precision, round_float32_rest_to_bf16, source_precision_keys, try_match_source_dtypes
@@ -804,6 +804,12 @@ def merge_checkpoints(
     except Exception:
         pass
 
+    # Whatever was last generated with is still in memory, and the merge needs
+    # that room. The next generation loads it again by itself.
+    if progress_cb:
+        progress_cb("Unloading the current checkpoint...")
+    sd_models.unload_model_weights()
+
     # An AIO composition is resolved and preflighted before any merge work, so
     # a missing component costs a load rather than a whole merge. The engine it
     # loads is the one the merge then uses -- loading A twice would double the
@@ -1062,7 +1068,7 @@ def merge_checkpoints(
         # see convert_module_tree_precision's docstring: a converted layer's
         # own state_dict() entry is not trustworthy on its own (it can
         # silently be a dequantized plain tensor).
-        unet_sd = utils.get_state_dict_after_quant(diffusion_a)
+        unet_sd = live_state_dict(diffusion_a)
         unet_sd.update(unet_overrides)
 
         processed_unet = fix_anima_state_dict_keys(
@@ -1074,7 +1080,7 @@ def merge_checkpoints(
         vae_output_keys: set[str] = set()
         if save_mode == "full":
             if clip_a is not None:
-                clip_sd = utils.get_state_dict_after_quant(clip_a)
+                clip_sd = live_state_dict(clip_a)
                 clip_sd.update(clip_overrides)
                 # Per-component precision runs on the internal state dict,
                 # before the architecture applies its save namespace: the slot
@@ -1094,7 +1100,7 @@ def merge_checkpoints(
                 for k in llm_adapter_keys:
                     sd[k] = match_dtype(sd[k], dit_dtype)
             if not is_custom_vae and not strip_vae and vae_a is not None:
-                vae_sd = utils.get_state_dict_after_quant(vae_a)
+                vae_sd = live_state_dict(vae_a)
                 vae_sd.update(vae_overrides)
                 _apply_plan_precision(vae_sd, composition.plan, "vae", progress_cb)
                 processed_vae = engine_a.model_config.process_vae_state_dict_for_saving(vae_sd)
@@ -1105,7 +1111,7 @@ def merge_checkpoints(
             # but on disk it is part of Anima's DiT (model.diffusion_model.llm_adapter.*).
             # We must include it even in unet_only mode!
             if clip_a is not None:
-                clip_sd = utils.get_state_dict_after_quant(clip_a)
+                clip_sd = live_state_dict(clip_a)
                 dit_dtype = dominant_float_dtype(sd)
                 for k, v in clip_sd.items():
                     if "llm_adapter" in k:
@@ -1165,7 +1171,7 @@ def merge_checkpoints(
         diffusion_a = diffusion_b = diffusion_c = None
         clip_a = clip_b = clip_c = None
         vae_a = vae_b = vae_c = None
-        unet = clip = None
+        unet = clip = lora_sd = None
         custom_vae_tensors = len(custom_vae_sd) if is_custom_vae else 0
         unet_sd = clip_sd = vae_sd = custom_vae_sd = None
         processed_unet = processed_clip = processed_vae = None

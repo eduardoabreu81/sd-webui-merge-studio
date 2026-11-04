@@ -74,6 +74,16 @@ def discard_patch_backups(patcher) -> None:
     patcher.backup = _NoPatchBackup()
 
 
+def live_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:
+    """The module's state dict, sharing its memory.
+
+    Forge's `utils.get_state_dict_after_quant` clones every tensor, which holds
+    the whole model twice while it is still loaded. Saving only reads these and
+    then copies them one at a time in `consume_to_cpu_state_dict`, after the
+    model is gone."""
+    return dict(module.state_dict())
+
+
 def consume_to_cpu_state_dict(sd: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Fresh CPU copies of `sd`, emptying it along the way.
 

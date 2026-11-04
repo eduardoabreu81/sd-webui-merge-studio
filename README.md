@@ -178,6 +178,7 @@ When you quantize one of them from full precision, Merge Studio converts the sam
 - **For cross-generation Anima merges, Model A must be the newer model with more blocks**, and Blend and Delta are not interchangeable at the same number — Delta moves roughly sixteen times less. See [Anima Merges](../../wiki/Anima-Merges).
 - **Compatibility checks are not exhaustive.** Merge Studio blocks the mismatches it knows about, but it cannot safely guess every new or uncommon architecture.
 - **Quantizing a VAE** affects image quality more than quantizing the diffusion model. FP16 or BF16 is the safest choice.
+- **Large models need a lot of memory.** A merge holds both models at once, and Krea 2 is about 24 GB each in BF16, twice that in FP32. Merge Studio unloads the current checkpoint first, and your next generation loads it back. If Forge closes in the middle with no message, it most likely ran out of memory: give Windows more virtual memory, with a fixed size rather than an automatic one.
 - **Some models keep the text encoder and VAE separately.** Make sure the required files are selected under Forge Neo's Additional Modules, even when saving only the diffusion model.
 
 Things that went differently than expected are collected in
