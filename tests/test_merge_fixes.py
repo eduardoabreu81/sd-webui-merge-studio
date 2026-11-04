@@ -16,7 +16,7 @@ from torch import nn
 
 from merge_studio.loose_parameters import merge_loose_parameters
 from merge_studio.merge_modes import INTERP_NO_INTERPOLATION, INTERP_WEIGHTED_SUM, merge_mode
-from merge_studio.merge_precision import consume_to_cpu_state_dict, discard_patch_backups, live_state_dict
+from merge_studio.merge_precision import bake_patches, consume_to_cpu_state_dict, live_state_dict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -160,56 +160,76 @@ class UnusedModelTests(unittest.TestCase):
 
 
 class Patcher:
-    """The part of Forge's ModelPatcher a bake goes through
-    (backend/patcher/base.py::patch_weight_to_device)."""
+    """What Forge's ModelPatcher does with the old weights during a bake
+    (backend/patcher/base.py): `backup` keeps them, and so does the list of
+    parameters `load` holds until it ends."""
 
     def __init__(self, weight):
         self.weight = weight
         self.backup = {}
+        self.patches = {"w": 1}
+        self.calls = []
+        self.old_alive_during_load = None
 
-    def patch(self):
-        if "w" not in self.backup:
-            self.backup["w"] = self.weight
+    def patch_weight_to_device(self, key, device_to=None):
+        self.calls.append(("key", key, device_to))
+        if key not in self.backup:
+            self.backup[key] = self.weight
         self.weight = self.weight + 1
 
-
-class PatchBackupTests(unittest.TestCase):
-    def test_forge_keeps_the_old_weight_without_it(self):
-        old = torch.zeros(4)
-        reference = weakref.ref(old)
-        patcher = Patcher(old)
-        del old
-        patcher.patch()
+    def patch_model(self, device_to=None, lowvram_model_memory=0, load_weights=True, force_patch_weights=False):
+        self.calls.append(("patch_model", load_weights, force_patch_weights))
+        if not load_weights:
+            return
+        params = [self.weight]  # ModelPatcher._load_list
+        reference = weakref.ref(self.weight)
+        for key in self.patches:
+            self.patch_weight_to_device(key, device_to=device_to)
         gc.collect()
-        self.assertIsNotNone(reference())
+        self.old_alive_during_load = reference() is not None
+        del params
 
-    def test_with_it_the_old_weight_is_released(self):
+
+CPU = torch.device("cpu")
+
+
+class BakePatchesTests(unittest.TestCase):
+    def test_dropping_only_the_backup_would_not_free_the_old_weight(self):
+        # What the first attempt at this did, and why it changed nothing.
+        patcher = Patcher(torch.zeros(4))
+        patcher.backup = type("NoBackup", (dict,), {"__setitem__": lambda self, k, v: None})()
+        patcher.patch_model(device_to=CPU, force_patch_weights=True)
+        self.assertTrue(patcher.old_alive_during_load)
+
+    def test_on_the_cpu_the_old_weight_is_released_as_it_is_replaced(self):
         old = torch.zeros(4)
         reference = weakref.ref(old)
         patcher = Patcher(old)
         del old
-        discard_patch_backups(patcher)
-        patcher.patch()
+        bake_patches(patcher, CPU)
         gc.collect()
         self.assertIsNone(reference())
         self.assertTrue(torch.equal(patcher.weight, torch.ones(4)))
-
-    def test_it_stays_empty_for_the_rest_of_the_patcher(self):
-        patcher = Patcher(torch.zeros(4))
-        discard_patch_backups(patcher)
-        patcher.patch()
-        patcher.patch()
-        self.assertNotIn("w", patcher.backup)
-        self.assertIsNone(patcher.backup.get("w", None))
         self.assertEqual([], list(patcher.backup.keys()))
-        patcher.backup.clear()
 
-    def test_the_merge_discards_them_before_patching(self):
+    def test_on_the_cpu_it_skips_the_load_but_keeps_the_object_patches(self):
+        patcher = Patcher(torch.zeros(4))
+        bake_patches(patcher, CPU)
+        self.assertEqual(("patch_model", False, False), patcher.calls[0])
+        self.assertEqual(("key", "w", CPU), patcher.calls[1])
+
+    def test_a_gpu_still_goes_through_forges_load(self):
+        patcher = Patcher(torch.zeros(4))
+        bake_patches(patcher, torch.device("cuda"))
+        self.assertEqual(("patch_model", True, True), patcher.calls[0])
+
+    def test_the_merge_uses_it_for_both_patchers(self):
         merge = source("merge_studio", "checkpoint_merge.py")
         block = merge[merge.index('progress_cb("Materializing patched weights'):]
         block = block[: block.index("unet_overrides = {}")]
-        self.assertLess(block.index("discard_patch_backups(unet)"), block.index("unet.patch_model("))
-        self.assertIn("discard_patch_backups(clip.patcher)", block)
+        self.assertIn("bake_patches(unet, target_device)", block)
+        self.assertIn("bake_patches(clip.patcher, target_device)", block)
+        self.assertNotIn(".patch_model(", block)
 
 
 class StateDictCopyTests(unittest.TestCase):

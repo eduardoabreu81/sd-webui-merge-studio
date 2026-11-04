@@ -64,14 +64,27 @@ class _NoPatchBackup(dict):
         pass
 
 
-def discard_patch_backups(patcher) -> None:
-    """Stop Forge keeping every patched weight's old value.
+def bake_patches(patcher, device) -> None:
+    """Apply a patcher's LoRAs for good, holding the model only once on the CPU.
 
-    Generation needs that backup to take a LoRA off again. A bake throws the
-    model away afterwards, and keeping it holds the whole diffusion model twice
-    while patching: about 96 GB for an FP32 Krea 2, which took Forge down on a
-    32 GB machine. Only this patcher object changes, not Forge's code."""
+    `patch_model` holds it twice, which is about 96 GB for an FP32 Krea 2 and
+    took Forge down on a 32 GB machine. Two things keep the old weights alive:
+    the backup generation needs to take a LoRA off again, and the list of every
+    module's parameters `ModelPatcher.load` keeps until it ends, so dropping
+    only the backup frees nothing. A bake throws the model away afterwards, so
+    it needs neither.
+
+    Measured through Forge's own patcher on a 0.67 GB float32 model, above the
+    starting memory: `patch_model` +1.32 GB, the same with no backup, and this
+    +0.13 GB. A GPU keeps `patch_model`: the weights have to move there anyway.
+    Only this patcher object changes, not Forge's code."""
     patcher.backup = _NoPatchBackup()
+    if getattr(device, "type", None) != "cpu":
+        patcher.patch_model(device_to=device, lowvram_model_memory=0, force_patch_weights=True)
+        return
+    patcher.patch_model(device_to=device, load_weights=False)
+    for key in list(patcher.patches):
+        patcher.patch_weight_to_device(key, device_to=device)
 
 
 def live_state_dict(module: nn.Module) -> dict[str, torch.Tensor]:

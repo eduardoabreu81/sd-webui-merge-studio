@@ -235,7 +235,7 @@ class WiringTests(unittest.TestCase):
     def test_the_merge_patches_inside_the_forced_dtype(self):
         merge = source("merge_studio", "checkpoint_merge.py")
         block = merge[merge.index("forced_lora_compute_dtype(memory_management"):]
-        self.assertIn("unet.patch_model(", block[:400])
+        self.assertIn("bake_patches(unet,", block[:400])
 
     def test_a_quantized_base_is_never_refused(self):
         for path in (("merge_studio", "checkpoint_merge.py"), ("merge_studio", "lora_bake.py")):

@@ -52,7 +52,7 @@ from .forge_capabilities import vae_key_prefix_for_saving
 from . import anima_remap
 from . import elemental_weights
 from .loose_parameters import merge_loose_parameters
-from .merge_precision import discard_patch_backups, float32_source_storage, forced_lora_compute_dtype, fp32_notes, live_state_dict, upcast_to_float32
+from .merge_precision import bake_patches, float32_source_storage, forced_lora_compute_dtype, fp32_notes, live_state_dict, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import apply_component_precision, round_float32_rest_to_bf16, source_precision_keys, try_match_source_dtypes
@@ -1023,12 +1023,10 @@ def merge_checkpoints(
             if progress_cb:
                 progress_cb("Materializing patched weights (this can take a while)...")
 
-            discard_patch_backups(unet)
             with forced_lora_compute_dtype(memory_management, torch.float32) if fp32 else contextlib.nullcontext():
-                unet.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
+                bake_patches(unet, target_device)
                 if (save_full or any(a["llm_adapter_warning"] for a in applied_loras)) and clip is not None and getattr(clip, "patcher", None) is not None:
-                    discard_patch_backups(clip.patcher)
-                    clip.patcher.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
+                    bake_patches(clip.patcher, target_device)
 
         unet_overrides = {}
         clip_overrides = {}
