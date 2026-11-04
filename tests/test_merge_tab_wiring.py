@@ -111,6 +111,49 @@ class MergeHandlerInputsTests(unittest.TestCase):
             self.assertIn(argument, call)
 
 
+class ClearAllTests(unittest.TestCase):
+    """A finished merge leaves its models selected, and Model B hides under No
+    Interpolation with its value intact. Clear All is the way back to a blank
+    tab, so it has to reach everything, the hidden fields included."""
+
+    def setUp(self):
+        self.source = ui_source()
+        self.binding = self.source[self.source.index("merge_clear_btn.click("):]
+        self.binding = self.binding[: self.binding.index("queue=False")]
+        self.handler = self.source[self.source.index("def clear_merge_form("):]
+        self.handler = self.handler[: self.handler.index("merge_clear_btn.click(")]
+
+    def test_the_button_sits_beside_merge_and_cancel(self):
+        row = self.source[self.source.index('merge_btn = gr.Button("Merge / Process"'):]
+        row = row[: row.index("gr.Markdown(")]
+        self.assertIn('merge_clear_btn = gr.Button("Clear All"', row)
+        self.assertIn("merge_cancel_btn", row)
+
+    def test_it_resets_every_saved_field_to_its_starting_value(self):
+        # Read off the controls, so a field added later cannot be forgotten
+        # here or restored to a default that has drifted from the real one.
+        self.assertIn("[c.value for c in recipe_scalars]", self.source)
+        self.assertIn("recipe_scalars", self.binding)
+
+    def test_the_models_are_among_the_fields_it_resets(self):
+        controls = bracketed(self.source, "recipe_scalars = [")
+        for control in ("merge_primary", "merge_secondary", "merge_tertiary", "merge_text_stage"):
+            self.assertIn(control, controls)
+
+    def test_it_empties_the_lora_rows_and_the_pasted_tags(self):
+        self.assertIn("clear_all_slots()", self.handler)
+        self.assertIn("all_lora_outputs", self.binding)
+        self.assertIn("merge_lora_tags", self.binding)
+        self.assertIn("merge_lora_tags_status", self.binding)
+
+    def test_the_returned_values_match_the_outputs_in_order(self):
+        # Gradio assigns by position: scalars, then the LoRA rows, then the
+        # three text panels.
+        self.assertIn("outputs=recipe_scalars + all_lora_outputs + [merge_lora_tags, merge_lora_tags_status, merge_html]", self.binding)
+        self.assertIn("+ clear_all_slots()", self.handler)
+        self.assertIn('+ ["", "", ""]', self.handler)
+
+
 class PerBlockEditorIsAnimaOnlyTests(unittest.TestCase):
     def test_the_accordion_starts_hidden(self):
         # It is absent for anything that is not Anima -- not disabled, not

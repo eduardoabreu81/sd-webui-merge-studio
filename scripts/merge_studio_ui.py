@@ -2109,6 +2109,7 @@ def create_merge_studio_tab():
 
                 with gr.Row():
                     merge_btn = gr.Button("Merge / Process", variant="primary", scale=4)
+                    merge_clear_btn = gr.Button("Clear All", variant="secondary", scale=1)
                     merge_cancel_btn = gr.Button("Cancel", variant="stop", scale=1)
                 gr.Markdown(
                     "Cancel stops at the next step and saves nothing. A step already "
@@ -2121,6 +2122,26 @@ def create_merge_studio_tab():
                 # Forge's own flag, reset by shared.state.begin() at the start
                 # of every job, so a stray press between merges is harmless.
                 merge_cancel_btn.click(fn=lambda: shared.state.interrupt(), queue=False, show_progress=False)
+
+                # Read off the controls, so a field added later is covered and
+                # its default cannot drift. Model B and C are in here too: they
+                # hide under No Interpolation and keep their value.
+                _merge_form_defaults = [c.value for c in recipe_scalars]
+
+                def clear_merge_form():
+                    return (
+                        [gr.update(value=value) for value in _merge_form_defaults]
+                        + clear_all_slots()
+                        + ["", "", ""]
+                    )
+
+                merge_clear_btn.click(
+                    fn=clear_merge_form,
+                    inputs=[],
+                    outputs=recipe_scalars + all_lora_outputs + [merge_lora_tags, merge_lora_tags_status, merge_html],
+                    queue=False,
+                    show_progress=False,
+                )
 
                 merge_btn.click(fn=lambda: "", outputs=[merge_html], queue=False, show_progress=False).then(
                     fn=call_queue.wrap_gradio_gpu_call(merge_handler, extra_outputs=lambda: [gr.skip()]),

@@ -75,6 +75,8 @@ https://github.com/eduardoabreu81/sd-webui-merge-studio
 
 Changed your mind? **Cancel**, next to the button, stops the job and saves nothing. It takes effect at the next step, so a model that is still loading finishes loading first. Once the file is being written, it can no longer be cancelled.
 
+Starting something new? **Clear All** resets the whole tab, including models and LoRAs left over from the last merge.
+
 ### Build an AIO (self-contained) checkpoint
 
 1. Select the model in **Model A**.
