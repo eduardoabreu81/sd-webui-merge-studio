@@ -20,6 +20,7 @@ import backend.args
 from backend.operations_mixed_precision import _quantized_weight_state_dict
 from backend.quant_ops import QUANT_ALGOS, QuantizedTensor
 
+from .merge_precision import consume_to_cpu_state_dict
 from .quant_profiles import profile_for
 
 PLAIN_FORMATS = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
@@ -380,8 +381,9 @@ def to_cpu_contiguous_state_dict(sd: dict[str, torch.Tensor]) -> dict[str, torch
     user buffer" I/O error (os error 1784) instead of a clear Python
     exception. `.contiguous()`/`.cpu()` are no-ops when the tensor already
     satisfies them -- which an mmap'd tensor does -- so they don't help.
-    `.clone()` is the one op that always allocates fresh storage."""
-    return {k: v.detach().clone().contiguous().cpu() for k, v in sd.items()}
+    `.clone()` is the one op that always allocates fresh storage. Empties `sd`
+    as it goes: see merge_precision.consume_to_cpu_state_dict."""
+    return consume_to_cpu_state_dict(sd)
 
 
 def _save_safetensors_streaming(sd: dict[str, torch.Tensor], filepath: str, metadata: dict[str, str] | None = None) -> None:

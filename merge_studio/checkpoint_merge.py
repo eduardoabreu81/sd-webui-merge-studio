@@ -51,7 +51,8 @@ from .component_bundle import (
 from .forge_capabilities import vae_key_prefix_for_saving
 from . import anima_remap
 from . import elemental_weights
-from .merge_precision import float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
+from .loose_parameters import merge_loose_parameters
+from .merge_precision import discard_patch_backups, float32_source_storage, forced_lora_compute_dtype, fp32_notes, upcast_to_float32
 from .quant_utils import LLM_ADAPTER_MODULE_NAMES, PLAIN_FORMATS, SAFETENSORS_FLOAT_DTYPES, convert_module_tree_precision, detect_incompatible_engine, fix_anima_state_dict_keys, is_quantized, is_quantized_tensor, save_checkpoint_file, set_module_weight, to_cpu_contiguous_state_dict, weight_as_float
 from .precision_stats import dominant_float_dtype, match_dtype
 from .source_precision import apply_component_precision, round_float32_rest_to_bf16, source_precision_keys, try_match_source_dtypes
@@ -646,6 +647,23 @@ def _merge_module_tree(
         if progress_cb:
             progress_cb(i + 1, total, name)
 
+    if interp_method != INTERP_NO_INTERPOLATION:
+        def ratio_for(name: str) -> float:
+            if per_block is None:
+                return multiplier
+            block = block_index(name)
+            return per_block.effective_base if block is None else elemental_weights.resolve_weight(per_block, block, name)
+
+        loose_merged, loose_skipped = merge_loose_parameters(
+            named_a, named_b, named_c, interp_method, beta, ratio_for,
+            translate_name=translate_name,
+            skip_module=lambda m: is_quantized(m) or getattr(m, "quant_format", None) is not None,
+            target_device=target_device,
+            rand=rand,
+        )
+        merged_count += loose_merged
+        skipped.extend(loose_skipped)
+
     return merged_count, skipped
 
 
@@ -736,6 +754,12 @@ def merge_checkpoints(
         raise MergeError(f"{mode.label} requires a Secondary Model (B).")
     if mode.needs_c and not tertiary_name:
         raise MergeError(f"{mode.label} requires a Tertiary Model (C).")
+    # A field the mode hides keeps its value, and loading that model costs its
+    # whole size in RAM for nothing.
+    if not mode.needs_b:
+        secondary_name = None
+    if not mode.needs_c:
+        tertiary_name = None
 
     # Decided before anything expensive happens. With no selections this is the
     # traditional path, unchanged down to the global module list it reads.
@@ -993,9 +1017,11 @@ def merge_checkpoints(
             if progress_cb:
                 progress_cb("Materializing patched weights (this can take a while)...")
 
+            discard_patch_backups(unet)
             with forced_lora_compute_dtype(memory_management, torch.float32) if fp32 else contextlib.nullcontext():
                 unet.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
                 if (save_full or any(a["llm_adapter_warning"] for a in applied_loras)) and clip is not None and getattr(clip, "patcher", None) is not None:
+                    discard_patch_backups(clip.patcher)
                     clip.patcher.patch_model(device_to=target_device, lowvram_model_memory=0, force_patch_weights=True)
 
         unet_overrides = {}
@@ -1131,17 +1157,23 @@ def merge_checkpoints(
         if progress_cb and rounded:
             progress_cb(f"Saved {rounded} unquantized tensor(s) as BF16: the source is F32, and Forge loads them as BF16 anyway.")
 
-        sd = to_cpu_contiguous_state_dict(sd)
-
-        # `sd` now holds independent CPU copies of everything we need --
-        # drop the live (GPU-resident) models before the save step, which
-        # itself needs headroom to hold the whole checkpoint again while
-        # writing. Skipping this risks a silent OOM on modest-RAM machines.
+        # Drop the models and every other reference to their tensors first, so
+        # the copy below frees each original as it goes. Copying with them
+        # alive holds the whole model twice, which is what runs a modest-RAM
+        # machine out of memory.
         engine_a = engine_b = engine_c = None
         diffusion_a = diffusion_b = diffusion_c = None
         clip_a = clip_b = clip_c = None
         vae_a = vae_b = vae_c = None
+        unet = clip = None
+        custom_vae_tensors = len(custom_vae_sd) if is_custom_vae else 0
+        unet_sd = clip_sd = vae_sd = custom_vae_sd = None
+        processed_unet = processed_clip = processed_vae = None
+        unet_overrides = clip_overrides = vae_overrides = None
         memory_management.soft_empty_cache()
+        gc.collect()
+
+        sd = to_cpu_contiguous_state_dict(sd)
         gc.collect()
 
         metadata = _sanitize_metadata(
@@ -1187,7 +1219,7 @@ def merge_checkpoints(
 
         return {
             "output": output_path,
-            "merged": {"unet": merged_unet, "clip": merged_clip, "vae": (len(custom_vae_sd) if is_custom_vae else merged_vae)},
+            "merged": {"unet": merged_unet, "clip": merged_clip, "vae": (custom_vae_tensors if is_custom_vae else merged_vae)},
             "skipped": {"unet": skipped_unet, "clip": skipped_clip, "vae": skipped_vae},
             "anima_remap": anima_remap_note,
             "output_format": output_format,

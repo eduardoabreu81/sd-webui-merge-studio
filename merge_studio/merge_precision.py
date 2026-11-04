@@ -57,6 +57,34 @@ MERGE_PRECISION_CHOICES = [
 MERGE_PRECISION_LABEL_TO_KEY = dict(MERGE_PRECISION_CHOICES)
 
 
+class _NoPatchBackup(dict):
+    """A patcher backup that keeps nothing. Forge only reads it to undo a patch."""
+
+    def __setitem__(self, key, value):
+        pass
+
+
+def discard_patch_backups(patcher) -> None:
+    """Stop Forge keeping every patched weight's old value.
+
+    Generation needs that backup to take a LoRA off again. A bake throws the
+    model away afterwards, and keeping it holds the whole diffusion model twice
+    while patching: about 96 GB for an FP32 Krea 2, which took Forge down on a
+    32 GB machine. Only this patcher object changes, not Forge's code."""
+    patcher.backup = _NoPatchBackup()
+
+
+def consume_to_cpu_state_dict(sd: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Fresh CPU copies of `sd`, emptying it along the way.
+
+    Once nothing else holds the originals, each is freed as soon as it is
+    copied, so the peak is the model plus one tensor rather than two models."""
+    out = {}
+    for key in list(sd):
+        out[key] = sd.pop(key).detach().clone().contiguous().cpu()
+    return out
+
+
 def upcast_to_float32(root_module: nn.Module, skip: Callable[[torch.Tensor], bool] | None = None) -> int:
     """Casts every floating-point parameter under root_module to float32 in
     place and returns how many changed.
