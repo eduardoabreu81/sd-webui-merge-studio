@@ -125,6 +125,7 @@ def _build_metadata(
     block_weights: str = "",
     seed: int = 0,
     merge_precision: str = "native",
+    quantize_text_stage: bool = False,
 ) -> dict:
     """Mirrors modules/extras.py::run_modelmerger's metadata handling, so
     merges produced here carry the same sd_merge_recipe/sd_merge_models
@@ -168,6 +169,8 @@ def _build_metadata(
         # Only when it differs from how every other merge runs.
         if merge_precision != "native":
             merge_recipe["merge_precision"] = merge_precision
+        if quantize_text_stage:
+            merge_recipe["quantize_text_stage"] = True
         if components:
             # What went into this AIO, so another run can reconstruct the
             # same composition instead of inheriting whatever is configured.
@@ -714,12 +717,17 @@ def merge_checkpoints(
     block_weights: str = "",
     seed: int = 0,
     merge_precision: str = "native",
+    quantize_text_stage: bool = False,
 ) -> dict:
     """merge_precision: "native" keeps Model A's precision and Forge's LoRA
     math (float16 on most GPUs); "fp32" upcasts Model A's diffusion model,
     merges and applies LoRAs in float32 and quantizes from that result
     (merge_precision.py). A quantized Model A keeps its quantized layers;
-    Forge patches those in float32 and requantizes them once."""
+    Forge patches those in float32 and requantizes them once.
+
+    quantize_text_stage: also convert the layers the architecture's profile
+    lists as its text stage (Krea 2's text-fusion blocks), when quantizing
+    from full precision (quant_profiles.py)."""
     fp32 = merge_precision == "fp32"
     # Which models a mode needs is a property of the mode, declared once in
     # MERGE_MODES rather than restated here every time one is added.
@@ -1001,6 +1009,7 @@ def merge_checkpoints(
                 diffusion_a, output_format,
                 progress_cb=(lambda i, t, n: progress_cb(f"Quantizing ({i}/{t}): {n}")) if progress_cb else None,
                 quant_input_dtype=torch.float32 if fp32 else torch.bfloat16,
+                quantize_text_stage=quantize_text_stage,
             )
 
         if save_mode == "full" and clip_output_format != "same" and clip_a is not None:
@@ -1156,6 +1165,7 @@ def merge_checkpoints(
                 block_weights=block_weights,
                 seed=seed,
                 merge_precision=merge_precision,
+                quantize_text_stage=quantize_text_stage,
             )
         )
 

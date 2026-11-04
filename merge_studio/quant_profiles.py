@@ -51,6 +51,8 @@ class QuantProfile:
     the path prefixes converted by default; `by_group` replaces that list for
     a format family whose official build selects differently. `keep` are
     patterns that stay at full precision even inside a selected prefix.
+    `text_stage` are prefixes published builds disagree on, converted on
+    request; the default selection stands unless it is asked for.
     """
 
     name: str
@@ -58,28 +60,37 @@ class QuantProfile:
     quantize: tuple[str, ...]
     by_group: dict[str, tuple[str, ...]] = field(default_factory=dict)
     keep: tuple[str, ...] = ()
+    text_stage: tuple[str, ...] = ()
 
-    def prefixes_for(self, output_format: str) -> tuple[str, ...]:
-        return self.by_group.get(FORMAT_GROUPS.get(output_format, ""), self.quantize)
+    def prefixes_for(self, output_format: str, text_stage: bool = False) -> tuple[str, ...]:
+        prefixes = self.by_group.get(FORMAT_GROUPS.get(output_format, ""), self.quantize)
+        if text_stage:
+            prefixes += tuple(p for p in self.text_stage if p not in prefixes)
+        return prefixes
 
-    def selects(self, module_path: str, output_format: str) -> bool:
+    def selects(self, module_path: str, output_format: str, text_stage: bool = False) -> bool:
         if any(re.search(pattern, module_path) for pattern in self.keep):
             return False
-        return module_path.startswith(self.prefixes_for(output_format))
+        return module_path.startswith(self.prefixes_for(output_format, text_stage))
 
+
+_KREA2_TEXT_STAGE = ("txtfusion.layerwise_blocks.", "txtfusion.refiner_blocks.")
 
 PROFILES: tuple[QuantProfile, ...] = (
     QuantProfile(
         # Comfy-Org: INT8 ConvRot converts the 28 main blocks only; FP8 scaled,
         # MXFP8 and NVFP4 also convert the text-fusion blocks. All four keep
         # `first`, `last`, `tmlp`, `tproj`, `txtmlp` and `txtfusion.projector`.
+        # Community INT4 builds split the same way: Muse keeps the text-fusion
+        # blocks (224 layers), Turbo NSFW converts them (256).
         name="krea2",
         marks=("first", "tproj", "txtmlp", "txtfusion", "blocks"),
         quantize=("blocks.",),
         by_group={
-            "fp8": ("blocks.", "txtfusion.layerwise_blocks.", "txtfusion.refiner_blocks."),
-            "fp4": ("blocks.", "txtfusion.layerwise_blocks.", "txtfusion.refiner_blocks."),
+            "fp8": ("blocks.", *_KREA2_TEXT_STAGE),
+            "fp4": ("blocks.", *_KREA2_TEXT_STAGE),
         },
+        text_stage=_KREA2_TEXT_STAGE,
     ),
     QuantProfile(
         # Comfy-Org INT8 ConvRot and NVFP4 (BennyDaBall's agrees): the
@@ -136,6 +147,15 @@ PROFILES: tuple[QuantProfile, ...] = (
         keep=(r"\.adaLN_modulation\.",),
     ),
 )
+
+
+def offers_text_stage(profile_name: str, output_format: str) -> bool:
+    """Whether converting the text stage would change this format's result:
+    a quantized format whose default selection leaves it out."""
+    profile = next((p for p in PROFILES if p.name == profile_name), None)
+    if profile is None or not profile.text_stage or output_format not in FORMAT_GROUPS:
+        return False
+    return not set(profile.text_stage) <= set(profile.prefixes_for(output_format))
 
 
 def profile_for(module_paths) -> QuantProfile | None:

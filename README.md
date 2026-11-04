@@ -91,6 +91,8 @@ The result is reported as an AIO only after it reopens with no external modules.
 3. Select the desired output precision for each component.
 4. Enter an output name and click **Merge / Process**.
 
+**Krea 2 at INT4, INT8, W4A8 or W6A8:** an extra option, **Also quantize the text stage**, appears when it makes a difference. Left off, the part of the model that prepares your prompt stays at full precision. Turned on, the file is about 0.5 GB smaller at 4 bits. Published Krea 2 builds do it both ways, so try the same seed on each to see which you prefer.
+
 ### Bake LoRAs
 
 1. Expand **Bake LoRA(s) into Checkpoint**.

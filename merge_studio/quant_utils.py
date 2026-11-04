@@ -258,7 +258,7 @@ def iter_quantizable_linears(root_module: nn.Module, min_features: int = DEFAULT
         yield name, module
 
 
-def _fresh_targets(root_module: nn.Module, output_format: str) -> list[tuple[str, nn.Module]]:
+def _fresh_targets(root_module: nn.Module, output_format: str, quantize_text_stage: bool = False) -> list[tuple[str, nn.Module]]:
     """Layers to convert when the source has no quantization to mirror.
 
     An architecture with a measured profile (quant_profiles.py) converts what
@@ -277,7 +277,7 @@ def _fresh_targets(root_module: nn.Module, output_format: str) -> list[tuple[str
         targets = [
             (name, module)
             for name, module in iter_quantizable_linears(root_module, skip_substrings=("norm",))
-            if profile.selects(name, output_format)
+            if profile.selects(name, output_format, text_stage=quantize_text_stage)
         ]
         debug_print(f"Using the {profile.name} quantization profile for '{output_format}' ({len(targets)} layers).")
 
@@ -316,6 +316,7 @@ def convert_module_tree_precision(
     progress_cb=None,
     skip_names: tuple[str, ...] = (),
     quant_input_dtype: torch.dtype = torch.bfloat16,
+    quantize_text_stage: bool = False,
 ) -> tuple[int, dict[str, torch.Tensor]]:
     """Rewrites, in place, every eligible weight under root_module to
     output_format (a key of PLAIN_FORMATS, QUANT_ALGOS or
@@ -326,6 +327,10 @@ def convert_module_tree_precision(
 
     quant_input_dtype: the precision the quantizer sees; float32 for a model
     that was patched in float32 (merge_precision.py).
+
+    quantize_text_stage: also convert the layers a profile lists as its
+    `text_stage` (quant_profiles.py). Only a selection from full precision
+    reads it: a quantized source is mirrored as it is.
 
     Returns (converted_count, state_dict_overrides). state_dict_overrides
     contains the correctly-serialized replacement entries (weight/scale/
@@ -347,7 +352,7 @@ def convert_module_tree_precision(
     back to a plain float tensor instead of erroring, so the bug is
     invisible until you inspect the actual output file's dtypes."""
     already_quantized = [(n, m) for n, m in root_module.named_modules() if is_quantized(m)]
-    targets = already_quantized if already_quantized else _fresh_targets(root_module, output_format)
+    targets = already_quantized if already_quantized else _fresh_targets(root_module, output_format, quantize_text_stage=quantize_text_stage)
     if skip_names:
         # Applied after selection so it covers both branches above.
         targets = [(n, m) for n, m in targets if not any(s in n for s in skip_names)]

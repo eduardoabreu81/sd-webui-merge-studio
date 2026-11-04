@@ -43,6 +43,7 @@ from merge_studio.checkpoint_inspector import (  # noqa: E402
     read_safetensors_header,
 )
 from merge_studio.merge_precision import MERGE_PRECISION_CHOICES, MERGE_PRECISION_LABEL_TO_KEY  # noqa: E402
+from merge_studio.quant_profiles import offers_text_stage  # noqa: E402
 from merge_studio.quant_utils import OUTPUT_FORMAT_CHOICES, debug_print  # noqa: E402
 
 
@@ -575,7 +576,7 @@ RECIPE_FIELDS = (
     "save_mode", "device", "output_name", "discard",
     "format", "clip_format", "vae_format",
     "save_metadata", "config_source", "add_merge_recipe", "bake_vae",
-    "anima_extend_rule", "merge_precision",
+    "anima_extend_rule", "merge_precision", "quantize_text_stage",
 )
 
 
@@ -811,6 +812,16 @@ def _anima_block_count(checkpoint_name: str) -> int | None:
     return blocks if isinstance(blocks, int) and blocks > 0 else None
 
 
+def text_stage_visibility(primary_name: str, format_label: str = ""):
+    """The text-stage option is on screen only where it changes the file: a
+    Krea 2 Model A going to a format whose default selection leaves those
+    layers out. Absent otherwise, as in `block_weights_visibility`."""
+    info = _get_cached_checkpoint_info(primary_name)
+    if not info or info.get("error") or get_model_family(info.get("architecture", "")) != "krea":
+        return gr.update(visible=False)
+    return gr.update(visible=offers_text_stage("krea2", FORMAT_LABEL_TO_KEY.get(format_label, "same")))
+
+
 def block_weights_visibility(primary_name: str, interp_label: str = ""):
     """Per-block weights are shown when they can do something, and absent
     otherwise.
@@ -1020,6 +1031,7 @@ def merge_handler(
     add_merge_recipe: bool = True,
     bake_vae_label: str = ORIGINAL_VAE_LABEL,
     merge_precision_label: str = MERGE_PRECISION_CHOICES[0][0],
+    quantize_text_stage: bool = False,
     *component_and_lora_args,
 ):
     # One variadic, split at a known boundary: the component rows come first
@@ -1119,6 +1131,7 @@ def merge_handler(
             block_weights=block_weights or "",
             seed=int(seed or 0),
             merge_precision=merge_precision,
+            quantize_text_stage=bool(quantize_text_stage),
         )
 
         sd_models.list_models()
@@ -1883,6 +1896,17 @@ def create_merge_studio_tab():
                     ),
                 )
 
+                merge_text_stage = gr.Checkbox(
+                    label="Also quantize the text stage (txtfusion)",
+                    value=False,
+                    visible=False,
+                    info=(
+                        "Krea 2: makes the file about 0.5 GB smaller at 4 bits, and the prompt reaches the main blocks "
+                        "with less precision. Off keeps these layers at full precision. No effect on a Model A that is "
+                        "already quantized: its layers are kept as they are."
+                    ),
+                )
+
                 with gr.Row(equal_height=True):
                     merge_bake_vae = gr.Dropdown(
                         label="Bake VAE",
@@ -1962,6 +1986,15 @@ def create_merge_studio_tab():
 
                 # Model A decides both whether the editor exists at all and
                 # how many blocks the rules have to work with.
+                for _control in (merge_primary, merge_format):
+                    _control.change(
+                        fn=text_stage_visibility,
+                        inputs=[merge_primary, merge_format],
+                        outputs=[merge_text_stage],
+                        show_progress=False,
+                        queue=False,
+                    )
+
                 for _control in (merge_primary, merge_interp):
                     _control.change(
                         fn=block_weights_visibility,
@@ -2032,7 +2065,7 @@ def create_merge_studio_tab():
                     merge_save_mode, merge_device, merge_output_name, merge_discard,
                     merge_format, merge_clip_format, merge_vae_format,
                     merge_save_metadata, merge_config_source, merge_add_recipe, merge_bake_vae,
-                    anima_extend_rule, merge_precision,
+                    anima_extend_rule, merge_precision, merge_text_stage,
                 ]
                 recipe_dds = [dd for dd, _ in merge_lora_rows]
                 recipe_sts = [st for _, st in merge_lora_rows]
@@ -2116,6 +2149,7 @@ def create_merge_studio_tab():
                         merge_add_recipe,
                         merge_bake_vae,
                         merge_precision,
+                        merge_text_stage,
                         *[c for row in merge_component_rows for c in row],
                         *[c for pair in merge_lora_rows for c in pair],
                     ],
@@ -2465,6 +2499,7 @@ def create_merge_studio_tab():
             merge_vae_format,
             merge_bake_vae,
             merge_precision,
+            merge_text_stage,
             inspector_checkpoint,
             merge_save_metadata,
             merge_config_source,
