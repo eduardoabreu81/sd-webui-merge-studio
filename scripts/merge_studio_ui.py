@@ -241,10 +241,18 @@ def _err_html(e: Exception) -> str:
     return f"<div class='error'>Error: {e}</div>"
 
 
-def _format_dropdown(label: str, default_same=True):
+# comfy-kitchen's compiled W4A8/W6A8 path needs SM 8.0; INT8 and W4A4 have Turing
+# kernels. Below 8.0 these two formats fall back to its generic torch operations.
+OUTPUT_FORMAT_SPEED_NOTE = (
+    "W4A8 and W6A8 need an NVIDIA RTX 30 series card or newer for full speed. "
+    "On older NVIDIA cards, they generate more slowly than INT8 or W4A4."
+)
+
+
+def _format_dropdown(label: str, default_same=True, info: str | None = None):
     choices = [lbl for lbl, _ in OUTPUT_FORMAT_CHOICES]
     value = choices[0] if default_same else choices[1]
-    return gr.Dropdown(label=label, choices=choices, value=value)
+    return gr.Dropdown(label=label, choices=choices, value=value, info=info)
 
 
 # --- Quant Format Doctor -----------------------------------------------
@@ -1880,8 +1888,8 @@ def create_merge_studio_tab():
                     merge_discard = gr.Textbox(label="Layers to discard (regex)", placeholder="")
 
                 with gr.Row(equal_height=True):
-                    merge_format = _format_dropdown("Output format (diffusion model)")
-                    merge_clip_format = _format_dropdown("Text encoder format (only for Full mode)")
+                    merge_format = _format_dropdown("Output format (diffusion model)", info=OUTPUT_FORMAT_SPEED_NOTE)
+                    merge_clip_format = _format_dropdown("Text encoder format (only for Full mode)", info=OUTPUT_FORMAT_SPEED_NOTE)
                     merge_vae_format = _format_dropdown("VAE format (only for Full mode)")
 
                 merge_precision = gr.Radio(

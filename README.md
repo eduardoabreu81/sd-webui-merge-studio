@@ -149,6 +149,8 @@ Merge Studio supports the model families and file formats that Forge Neo can loa
 
 **Output formats:** FP16, BF16, FP32, FP8 e4m3fn, FP8 e5m2, MXFP8, INT8, INT8 ConvRot, NVFP4, INT4 ConvRot W4A4, W4A8, W6A8, or same as the source.
 
+**Choosing for speed:** W4A8 and W6A8 need an NVIDIA RTX 30 series card or newer for full speed. On older NVIDIA cards, they generate more slowly than INT8 or W4A4, so choose one of those if speed matters most.
+
 ### 🆕 Newer models
 
 Merge Studio recognizes these models, keeps them apart from older families with similar names, and knows their text encoders and VAEs:
