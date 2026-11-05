@@ -335,8 +335,13 @@ def get_model_family(arch: str) -> str:
 
 
 # backend/quant_ops.py::QUANT_ALGOS keys, in the vocabulary the output-format
-# dropdown already uses. int8_tensorwise is listed twice because the rotation is
-# what distinguishes the two builds a user can choose between.
+# dropdown already uses. int8_tensorwise is the only format where the blob's
+# convrot flag means anything: it separates the two builds a user can choose.
+#
+# The W4A4, W4A8 and W6A8 layouts always rotate and have no such option, so the
+# flag only records who wrote the file. Comfy-Org's and BFL's W4A8 text encoders
+# write convrot=true; Forge's serializer, which this extension saves through,
+# leaves it out. Both spellings of one format get one name.
 _QUANT_FORMAT_LABELS = {
     ("int8_tensorwise", True): "INT8 convrot",
     ("int8_tensorwise", False): "INT8 tensor-wise",
@@ -345,12 +350,11 @@ _QUANT_FORMAT_LABELS = {
     ("nvfp4", False): "NVFP4",
     ("mxfp8", False): "MXFP8",
     ("convrot_w4a4", True): "INT4 convrot W4A4",
-    ("convrot_w4a4", False): "INT4 W4A4",
-    ("asym_w4a8_int8", False): "W4A8 asym INT8",
-    # Comfy-Org's and BFL's W4A8 text encoders write convrot=true in the blob.
+    ("convrot_w4a4", False): "INT4 convrot W4A4",
     ("asym_w4a8_int8", True): "W4A8 convrot",
-    ("w6a8_int8", False): "W6A8",
+    ("asym_w4a8_int8", False): "W4A8 convrot",
     ("w6a8_int8", True): "W6A8 convrot",
+    ("w6a8_int8", False): "W6A8 convrot",
 }
 
 # Enough layers to notice a checkpoint quantized in more than one format,
@@ -453,8 +457,9 @@ def _detect_precision(
         }
         if filepath and has_comfy_quant:
             configs |= _read_quant_configs(filepath, header, data_offset, declared)
+        # A set: layers that differ only by the flag are one format, not "Mixed".
         labels = sorted(
-            _QUANT_FORMAT_LABELS.get((fmt, convrot), fmt) for fmt, convrot in configs
+            {_QUANT_FORMAT_LABELS.get((fmt, convrot), fmt) for fmt, convrot in configs}
         )
         # Named after where the formats were found only when that is unusual:
         # a file with blobs keeps the suffix it always had.

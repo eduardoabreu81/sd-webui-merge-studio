@@ -747,7 +747,7 @@ def inspect_module(filepath: str) -> dict[str, Any]:
         return {"error": "Only .safetensors modules support header inspection."}
 
     try:
-        header, _ = read_safetensors_header(filepath)
+        header, data_offset = read_safetensors_header(filepath)
     except Exception as e:
         return {"error": f"Failed to read header: {e}"}
 
@@ -762,7 +762,9 @@ def inspect_module(filepath: str) -> dict[str, Any]:
         "file_size": size,
         "size_str": _human_size(size),
         "total_tensors": len(keys),
-        "precision": _detect_precision(header),
+        # The file and offset let it read the comfy_quant blobs: from the header
+        # alone, a W4A8 text encoder is just integer weights and reads as INT8.
+        "precision": _detect_precision(header, filepath, data_offset),
         "raw_metadata": header.get("__metadata__", {}) or {},
         # What the component is, for matching against the slot it should fill.
         "signature_id": detected["signature_id"],

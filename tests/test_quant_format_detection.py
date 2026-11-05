@@ -23,10 +23,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from merge_studio.aux_inspector import inspect_module
 from merge_studio.checkpoint_inspector import inspect_checkpoint
 
 CONVROT = {"format": "int8_tensorwise", "convrot": True, "convrot_groupsize": 256}
 TENSORWISE = {"format": "int8_tensorwise", "per_row": True}
+# The same W4A8 layer as two writers record it, both read from real files:
+# Forge's serializer (hypermosslushv1_turbo_w4a8) and Comfy-Org's
+# qwen3.5_9b_w4a8_gptq. The layout always rotates, so the flag changes nothing.
+W4A8_FORGE = {"format": "asym_w4a8_int8", "group_size": 16, "convrot_groupsize": 256}
+W4A8_COMFY = {**W4A8_FORGE, "convrot": True}
 
 
 def write_checkpoint(path: Path, layer_configs: list[dict] | None) -> None:
@@ -80,6 +86,39 @@ class QuantFormatDetectionTests(unittest.TestCase):
         self.assertTrue(precision.startswith("Mixed: "), precision)
         self.assertIn("INT8 convrot", precision)
         self.assertIn("INT8 tensor-wise", precision)
+
+    def test_always_rotated_formats_have_one_name_whoever_wrote_them(self):
+        cases = (
+            ("W4A8 convrot", "asym_w4a8_int8"),
+            ("W6A8 convrot", "w6a8_int8"),
+            ("INT4 convrot W4A4", "convrot_w4a4"),
+        )
+        for label, fmt in cases:
+            for conf in ({"format": fmt}, {"format": fmt, "convrot": True}):
+                with self.subTest(conf=conf):
+                    self.assertEqual(f"{label} (comfy_quant)", self._precision([conf] * 2))
+
+    def test_the_flag_alone_does_not_make_a_checkpoint_mixed(self):
+        self.assertEqual(
+            "W4A8 convrot (comfy_quant)", self._precision([W4A8_FORGE, W4A8_COMFY])
+        )
+
+    def test_a_real_second_format_is_still_mixed(self):
+        # Comfy-Org's text encoder: W4A8 layers plus an INT8 convrot lm_head.
+        self.assertEqual(
+            "Mixed: INT8 convrot, W4A8 convrot (comfy_quant)",
+            self._precision([W4A8_COMFY, CONVROT]),
+        )
+
+    def test_a_module_reports_the_format_its_blobs_state(self):
+        # The header alone shows integer weights, which used to read as "INT8".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "encoder.safetensors"
+            write_checkpoint(path, [W4A8_COMFY] * 2)
+
+            self.assertEqual(
+                "W4A8 convrot (comfy_quant)", inspect_module(str(path)).get("precision")
+            )
 
     def test_fp8_layers_are_named_by_their_format(self):
         self.assertEqual(
@@ -161,7 +200,7 @@ class DeclaredQuantFormatTests(unittest.TestCase):
     def test_a_declared_only_build_is_not_called_bf16(self):
         declared = {"blocks.0.attn.gate": W4A4, "blocks.1.attn.gate": W4A4}
 
-        self.assertEqual("INT4 W4A4 (quantization metadata)", self._precision(declared))
+        self.assertEqual("INT4 convrot W4A4 (quantization metadata)", self._precision(declared))
 
     def test_prefixed_declarations_are_read_too(self):
         # moodyMossMix names its layers with the model prefix.
@@ -188,12 +227,12 @@ class DeclaredQuantFormatTests(unittest.TestCase):
         self.assertEqual("BF16", self._precision(None, raw="{not json"))
 
     def test_the_header_alone_is_enough(self):
-        # Component inspectors pass no file path; the declaration needs none.
+        # The LoRA inspector passes no file path; the declaration needs none.
         from merge_studio.checkpoint_inspector import _detect_precision
 
         header = {"__metadata__": {"_quantization_metadata": json.dumps({"layers": {"a": W4A4}})}}
 
-        self.assertEqual("INT4 W4A4 (quantization metadata)", _detect_precision(header))
+        self.assertEqual("INT4 convrot W4A4 (quantization metadata)", _detect_precision(header))
 
 
 if __name__ == "__main__":
