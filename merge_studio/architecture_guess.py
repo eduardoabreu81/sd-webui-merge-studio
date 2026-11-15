@@ -163,6 +163,9 @@ _DETECTOR_LABELS = {
     "MossImage": "MOSS-Image (DiT)",
     "Iris": "Iris 3B (DiT)",
     "Fibo2": "FIBO 2 (DiT)",
+    # FLUX.2 [klein] 9B with a modality embedding and a depth grid: Klein's
+    # blocks, but trained apart, so not named "Flux" (it would pass as Klein).
+    "IrisZ": "Iris-Z (MMDiT)",
 }
 
 # Labels that name a fine-tune rather than an architecture. The detector cannot

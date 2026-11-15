@@ -325,6 +325,7 @@ def get_model_family(arch: str) -> str:
         ("ernie", "ernie"),
         ("pid", "pid"),
         ("moss-image", "moss"),
+        ("iris-z", "irisz"),
         ("iris 3b", "iris"),
         ("fibo 2", "fibo2"),
     ):

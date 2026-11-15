@@ -163,8 +163,13 @@ Merge Studio recognizes these models, keeps them apart from older families with 
 | **MOSS-Image** | Forge Neo, or the [MOSS-Image extension](https://github.com/eduardoabreu81/moss-image-forge-neo) |
 | **Iris 3B** | The [Iris 3B extension](https://github.com/eduardoabreu81/iris-3b-forge-neo) |
 | **FIBO 2** | The [FIBO 2 extension](https://github.com/eduardoabreu81/fibo2-forge-neo) |
+| **FLUX.2 [klein] 9B** | Forge Neo |
+| **Iris-Z** | The [Iris-Z extension](https://github.com/eduardoabreu81/iris-z-forge-neo) |
 
 When you quantize one of them from full precision, Merge Studio converts the same layers the official quantized releases do and leaves the sensitive ones (inputs, outputs, timing and text layers) at full precision. A model that is already quantized keeps its own layout.
+
+> [!TIP]
+> The [INT8 ConvRot and W4A8 builds of Iris-Z-small](https://huggingface.co/eduardoabreu81/iris-z-small-quantized) were made with Merge Studio. Quantize Iris-Z with the Iris-Z extension installed: Forge Neo alone does not load its depth layer, and the result would miss it.
 
 > [!NOTE]
 > Building an AIO checkpoint for Qwen-Image 2.1, FLUX 3, MOSS-Image, Iris 3B or FIBO 2 is still marked experimental.

@@ -196,7 +196,7 @@ class DisplayLabelTests(unittest.TestCase):
     def test_families_that_must_not_be_confused_stay_apart(self):
         distinct = ("SD15", "SDXL", "Flux", "Anima", "ZImage", "ErnieImage",
                     "Krea2", "QwenImage", "WAN21_T2V", "Chroma",
-                    "QwenImage21", "Flux3", "MossImage", "Iris", "Fibo2")
+                    "QwenImage21", "Flux3", "MossImage", "Iris", "Fibo2", "IrisZ")
         families = {
             name: get_model_family(ag._DETECTOR_LABELS[name]) for name in distinct
         }
@@ -207,7 +207,8 @@ class DisplayLabelTests(unittest.TestCase):
         # matched in the wrong order, each would pass as mergeable with a model
         # whose blocks it does not share.
         for new, old in (("Flux3", "Flux"), ("Flux3", "Flux2K4B"),
-                         ("QwenImage21", "QwenImage")):
+                         ("QwenImage21", "QwenImage"), ("IrisZ", "Flux2K9B"),
+                         ("IrisZ", "Iris")):
             with self.subTest(new=new, old=old):
                 self.assertNotEqual(
                     get_model_family(ag._DETECTOR_LABELS[new]),
