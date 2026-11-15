@@ -64,6 +64,12 @@ FIBO2_QUANT = ["layers.0.attention.qkv", "layers.43.feed_forward.w2", "layers.10
 FIBO2_KEEP = ["layers.0.adaLN_modulation.0", "noise_refiner.0.adaLN_modulation.0",
               "final_layer.linear", "final_layer.adaLN_modulation.1", "t_embedder.mlp.0", "x_embedder"]
 
+FLUX2_QUANT = ["double_blocks.0.img_attn.qkv", "double_blocks.7.txt_attn.proj", "double_blocks.3.img_mlp.0",
+               "double_blocks.3.txt_mlp.2", "single_blocks.0.linear1", "single_blocks.23.linear2"]
+FLUX2_KEEP = ["img_in", "txt_in", "time_in.in_layer", "time_in.out_layer", "final_layer.linear",
+              "final_layer.adaLN_modulation.1", "double_stream_modulation_img.lin",
+              "double_stream_modulation_txt.lin", "single_stream_modulation.lin", "modality_in"]
+
 MODELS = {
     "krea2": KREA2_BLOCKS + KREA2_TEXT_FUSION + KREA2_KEEP,
     "qwen_image21": QWEN21_QUANT + QWEN21_KEEP + ["txt_in.text_norm"],
@@ -71,6 +77,7 @@ MODELS = {
     "moss_image": MOSS_QUANT + MOSS_KEEP,
     "iris": IRIS_BLOCKS + IRIS_PIXEL + IRIS_PIXEL_MLP + IRIS_ADAPTER + IRIS_KEEP,
     "fibo2": FIBO2_QUANT + FIBO2_KEEP,
+    "flux2": FLUX2_QUANT + FLUX2_KEEP,
 }
 
 # (model, output format, quantized in the official build, kept there)
@@ -90,6 +97,8 @@ OFFICIAL_BUILDS = [
      IRIS_PIXEL + IRIS_PIXEL_MLP + IRIS_KEEP),
     # Measured 2026-10-27 on fibo2_dev and fibo2_edit_turbo, which agree.
     ("fibo2", "int8_tensorwise_convrot", FIBO2_QUANT, FIBO2_KEEP),
+    # Measured 2026-11-15 on Klein 9B INT8 ConvRot; Iris-Z-small adds modality_in.
+    ("flux2", "int8_tensorwise_convrot", FLUX2_QUANT, FLUX2_KEEP),
 ]
 
 

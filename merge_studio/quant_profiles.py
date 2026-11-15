@@ -146,6 +146,18 @@ PROFILES: tuple[QuantProfile, ...] = (
         quantize=("layers.", "noise_refiner.", "perceiver.layers."),
         keep=(r"\.adaLN_modulation\.",),
     ),
+    QuantProfile(
+        # FLUX.2 [klein] 9B INT8 ConvRot (Winnougan's distilled-base build):
+        # the 112 projections of the 8 double and 24 single blocks. `img_in`,
+        # `txt_in`, `time_in`, `final_layer` and the three shared stream
+        # modulations stay; the name heuristic would have converted `img_in`,
+        # `txt_in`, `time_in` and `final_layer.linear`. Iris-Z-small has the
+        # same layout plus `modality_in`, an embedding, kept as well.
+        # Measured 2026-11-15.
+        name="flux2",
+        marks=("double_blocks", "single_blocks", "double_stream_modulation_img", "single_stream_modulation"),
+        quantize=("double_blocks.", "single_blocks."),
+    ),
 )
 
 
