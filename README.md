@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/banner.jpg" alt="Merge Studio for Forge Neo banner"/>
+</p>
+
 # 🔀 Merge Studio
 
 <div align="center">
