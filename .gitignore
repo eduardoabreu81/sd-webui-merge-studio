@@ -23,3 +23,6 @@ docs/delta-mix-study/
 # They record decisions and reasoning while a feature is being designed, which
 # is useful here and misleading to anyone reading the repository as a user.
 docs/superpowers/
+
+# Test evidence and outputs: measurements, contact sheets, generated images.
+.local/
