@@ -8,6 +8,7 @@
 
 [![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue)](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 [![Gradio](https://img.shields.io/badge/Gradio-4.x-orange)](https://gradio.app/)
+[![Version](https://img.shields.io/badge/Version-0.6.0-brightgreen)](https://github.com/eduardoabreu81/sd-webui-merge-studio/releases)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Wiki](https://img.shields.io/badge/📖-Wiki-blueviolet)](https://github.com/eduardoabreu81/sd-webui-merge-studio/wiki)
 
@@ -29,6 +30,60 @@ Unlike traditional checkpoint mergers, Merge Studio can work with the quantized 
 - **Reusable workflows** — save a complete setup as a recipe and load it again later.
 - **Safer merges** — architecture checks and clear warnings help prevent incompatible combinations.
 - **Fast inspection** — read model, LoRA, VAE, and text-encoder metadata without loading the full file into memory.
+
+---
+
+## 🆕 What's New
+
+### v0.6.0 - FLUX.2 [klein] and Iris-Z Quantization
+
+- **FLUX.2 quantization profile** - INT8 ConvRot and W4A8 builds of FLUX.2 [klein] 9B and Iris-Z, quantizing the same layers as the published official builds
+- **Iris-Z recognised** - named in the inspectors, and FLUX.2 [klein] and Iris-Z listed among the newer models
+
+---
+
+## 📖 Changelog
+
+### v0.6.0 - FLUX.2 [klein] and Iris-Z Quantization
+
+- **FLUX.2 quantization profile** - INT8 ConvRot and W4A8 builds of FLUX.2 [klein] 9B and Iris-Z, quantizing the same layers as the published official builds
+- **Iris-Z recognised** - named in the inspectors, and FLUX.2 [klein] and Iris-Z listed among the newer models
+
+### v0.5.0 - LoRA Workflow and Reliability
+
+- **LoRAs merged and baked in float32**, so small deltas survive
+- **Real LoRA names and architectures** in the dropdowns, and **LoRA rows filled from a pasted prompt**
+- **Cancel** a running merge, bake or conversion, and a **Clear All** button on the merge tab
+- **Krea 2 builds can quantize their text stage** too
+- **Less memory**: every parameter merged, unused models skipped, a bake's peak RAM halved, memory freed before and during a merge
+- **FP32 sources keep their precision** when quantizing, and LoRA files are read directly now that Forge Neo dropped `load_lora_state_dict`
+
+### v0.4.0 - The Newer Architectures
+
+- **Recognises FLUX 3, MOSS-Image, Iris 3B, Qwen-Image 2.1 and FIBO 2**, with their text encoders and VAEs
+- **Quantizes them the way their official builds do**, keeping the precision of the layers a quantized output leaves alone
+- **Reads the quantization a checkpoint declares** in its metadata
+
+### v0.3.0 - Merge Modes, LoRA Merge and History
+
+- **Merge modes in one table, with three new ones**, and **per-block weights** where they can act
+- **DARE merges are repeatable**: the seed is shown and saved
+- **LoRA merge**: several LoRAs into one, on a tab of its own
+- **Reads the recipes other tools write**, including ComfyUI's ModelMergeSimple, and **draws the merge history** a checkpoint records
+- **Architectures named by Forge's own detector**, and a checkpoint Forge cannot fully load is refused before merging
+
+### v0.2.0 - AIO Checkpoints
+
+- **Self-contained checkpoints** that load with no Additional Modules, built from components Forge preflights
+- **Component precision and provenance preserved**, and every AIO **validated by reopening it**
+- **Recipe v2** records AIO compositions
+
+### v0.1.0 - First Release
+
+- **Checkpoint merge, precision conversion, LoRA and VAE baking** in one Forge Neo tab
+- **Cross-generation Anima merges** with block remapping
+- **Recipes** saved and loaded as JSON
+- **Inspector** for checkpoints, LoRAs, text encoders and VAEs, telling ConvRot INT8 apart from plain INT8
 
 ---
 
